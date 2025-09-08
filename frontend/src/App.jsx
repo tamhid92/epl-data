@@ -1242,7 +1242,7 @@ export default function App() {
       `}</style>
 
       <Navbar
-        brand="EPL Dashboard & Analytics"
+        brand="EPL Dashboard"
         teams={teams}
         onOpenTeam={openTeam}
         onOpenResults={() => setResultsModalOpen(true)}

@@ -240,7 +240,6 @@ jobs:
             ${EXTRA} \
             "${JENKINS_URL}/job/${JENKINS_JOB}/buildWithParameters" \
             --data-urlencode "frontend_changed=${{ needs.changes.outputs.frontend }}" \
-            --data-urlencode "api_changed=${{ needs.changes.outputs.api }}" \
-            --data-urlencode "etl_changed=${{ needs.changes.outputs.etl }}"
+            --data-urlencode "api_changed=${{ needs.changes.outputs.api }}"
 
           echo "Triggered Jenkins job: ${JENKINS_JOB}"
