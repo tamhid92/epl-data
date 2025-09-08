@@ -1,137 +1,175 @@
-name: Build & Push to GHCR
+# .github/workflows/publish-ghcr.yaml
+name: Build & Publish images to GHCR (per-folder)
 
 on:
   push:
-    branches: [ "**" ]
-    paths:
-      - "backend/api/**"
-      - "backend/data-pipeline/**"
-      - "frontend/**"
-      - ".github/workflows/publish-ghcr.yml"
+    branches:
+      - '**'          # run on any branch push
+    # no pull_request trigger (as requested)
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  REGISTRY: ghcr.io
+  group: ghcr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   changes:
-    name: Detect changed components
+    name: Detect changed paths
     runs-on: ubuntu-latest
     outputs:
-      api:       ${{ steps.filter.outputs.api }}
-      etl:       ${{ steps.filter.outputs.etl }}
-      frontend:  ${{ steps.filter.outputs.frontend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      api: ${{ steps.filter.outputs.api }}
+      etl: ${{ steps.filter.outputs.etl }}
     steps:
       - uses: actions/checkout@v4
-      - id: filter
-        uses: dorny/paths-filter@v3
+
+      - uses: dorny/paths-filter@v3
+        id: filter
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           filters: |
+            frontend:
+              - 'frontend/**'
             api:
               - 'backend/api/**'
             etl:
               - 'backend/data-pipeline/**'
-            frontend:
-              - 'frontend/**'
-
-  build-api:
-    name: Build & Push epl-api:dev
-    needs: changes
-    if: needs.changes.outputs.api == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Compute image name
-        run: |
-          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          echo "IMAGE=${{ env.REGISTRY }}/${OWNER_LC}/epl-api:dev" >> $GITHUB_ENV
-
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./backend/api
-          file: ./backend/api/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: ${{ env.IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-etl:
-    name: Build & Push epl-etl:latest
-    needs: changes
-    if: needs.changes.outputs.etl == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Compute image name
-        run: |
-          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          echo "IMAGE=${{ env.REGISTRY }}/${OWNER_LC}/epl-etl:latest" >> $GITHUB_ENV
-
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./backend/data-pipeline
-          file: ./backend/data-pipeline/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: ${{ env.IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   build-frontend:
-    name: Build & Push epl-frontend-react:dev
+    name: Build frontend → ghcr.io/<owner>/epl-frontend-react:dev
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compute image name
-        run: |
-          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          echo "IMAGE=${{ env.REGISTRY }}/${OWNER_LC}/epl-frontend-react:dev" >> $GITHUB_ENV
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - name: Lowercase owner
+        id: who
+        shell: bash
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.who.outputs.owner_lc }}/epl-frontend-react
+          tags: |
+            type=raw,value=dev
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+
+      - name: Build & Push
+        uses: docker/build-push-action@v6
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
           platforms: linux/amd64
-          tags: ${{ env.IMAGE }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-api:
+    name: Build API → ghcr.io/<owner>/epl-api:dev
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase owner
+        id: who
+        shell: bash
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.who.outputs.owner_lc }}/epl-api
+          tags: |
+            type=raw,value=dev
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+
+      - name: Build & Push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/api
+          file: ./backend/api/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-etl:
+    name: Build ETL → ghcr.io/<owner>/epl-etl:latest
+    needs: changes
+    if: needs.changes.outputs.etl == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase owner
+        id: who
+        shell: bash
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.who.outputs.owner_lc }}/epl-etl
+          tags: |
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+
+      - name: Build & Push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/data-pipeline
+          file: ./backend/data-pipeline/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
