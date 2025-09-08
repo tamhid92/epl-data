@@ -1,0 +1,158 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: epl-react
+  namespace: epl-data
+  labels:
+    app: epl-react
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: epl-react
+  template:
+    metadata:
+      labels:
+        app: epl-react
+    spec:
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+
+      initContainers:
+        - name: wait-for-api
+          image: curlimages/curl:8.10.1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              API_URL="http://epl-api.epl-data.svc.cluster.local:8000/readyz"
+              echo "Waiting for API at ${API_URL} ..."
+              for i in $(seq 1 120); do
+                code=$(curl -s -o /dev/null -w '%{http_code}' "${API_URL}" || true)
+                if [ "$code" = "200" ]; then
+                  echo "API is ready."
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "API not ready in time"
+              exit 1
+
+      containers:
+        - name: web
+          image: ghcr.io/tamhid92/epl-frontend-react:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-log
+              mountPath: /var/log/nginx
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 6
+
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-log
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: epl-react
+  namespace: epl-data
+  labels:
+    app: epl-react
+spec:
+  type: ClusterIP
+  selector:
+    app: epl-react
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epl-react-allow-cloudflared
+  namespace: epl-data
+spec:
+  podSelector:
+    matchLabels:
+      app: epl-react
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: cloudflared
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epl-react-egress
+  namespace: epl-data
+spec:
+  podSelector:
+    matchLabels:
+      app: epl-react
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: epl-api
+      ports:
+        - { protocol: TCP, port: 8000 }

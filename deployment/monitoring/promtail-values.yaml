@@ -1,0 +1,50 @@
+# promtail-values.yaml
+logNamespace: epl-data 
+config:
+  server:
+    http_listen_port: 3101
+    grpc_listen_port: 0
+  positions:
+    filename: /run/promtail/positions.yaml
+  clients:
+    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+  target_config:
+    sync_period: 10s
+
+  scrape_configs:
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+        - role: pod
+      pipeline_stages:
+        - cri: {}
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace]
+          action: keep
+          regex: ${logNamespace}
+        - action: replace
+          source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - action: replace
+          source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - action: replace
+          source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+        - action: replace
+          source_labels: [__meta_kubernetes_container_name]
+          target_label: container
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - action: replace
+          replacement: /var/log/pods/*$1/*.log
+          separator: /
+          source_labels: [__meta_kubernetes_pod_uid]
+          target_label: __path__
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "node-role.kubernetes.io/master"
+    operator: "Exists"
+    effect: "NoSchedule"

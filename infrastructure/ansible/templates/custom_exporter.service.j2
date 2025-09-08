@@ -1,0 +1,15 @@
+[Unit]
+Description=Custom Prometheus Exporter
+After=network.target
+
+[Service]
+Environment=EXPORTER_PORT=9101
+Environment=PING_TARGET=8.8.8.8
+Environment=SCRAPE_EVERY=15
+ExecStart=/usr/bin/python3 /opt/custom_exporter/node-info.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+- hosts: all
+  become: yes
+  vars:
+    kubernetes_allow_pods_on_control_plane: true
+
+  roles:
+    - kubernetes
+  
+  

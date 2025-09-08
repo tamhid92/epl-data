@@ -1,0 +1,50 @@
+locals {
+  size = {
+    "small" = {
+      cores   = 2
+      memory  = 4096
+      disk    = "50G"
+    }
+    "medium" = {
+      cores   = 4
+      memory  = 4096
+      disk    = "50G"
+    }
+    "large" = {
+      cores   = 4
+      memory  = 8192
+      disk    = "50G"
+    }
+  }
+}
+{% set ns = namespace(counter=0) %}
+{% for vm in vm_names %}
+resource "proxmox_vm_qemu" "new_vm{{ ns.counter }}" {
+    name = "{{ vm }}"
+    target_node = "pve"
+    cores = local.size["{{vm_size}}"].cores
+    sockets = 1
+    cpu_type = "host"
+    memory = local.size["{{vm_size}}"].memory
+    vm_state = "running"
+    scsihw = "virtio-scsi-single"
+    agent = 1
+    clone = "base-image"
+    onboot = true
+
+    network {
+        id = 0
+        model    = "virtio"
+        bridge   = "vmbr0"
+        firewall = true
+    }
+    disk {
+      slot = "scsi0"
+      storage = "local-lvm"
+      size = local.size["{{vm_size}}"].disk
+      backup = false
+    }
+    os_type = "ubuntu"
+}
+{% set ns.counter = ns.counter + 1 %}
+{% endfor %}

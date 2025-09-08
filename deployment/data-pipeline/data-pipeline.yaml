@@ -1,0 +1,181 @@
+# -------------------- ONE-TIME INIT JOB --------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-init
+  labels:
+    app: etl-jobs
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: etl-jobs
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for Postgres at ${DB_HOST}:${DB_PORT} ..."
+              until pg_isready -h "${DB_HOST}" -p "${DB_PORT}"; do
+                sleep 3
+              done
+              echo "Postgres is ready."
+      containers:
+        - name: etl
+          image: ghcr.io/tamhid92/epl-etl:latest
+          imagePullPolicy: Always
+          args: ["init"]
+          env:
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: DB_NAME
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: POSTGRES_PASSWORD
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: SQLALCHEMY_ECHO
+              value: "false"
+            - name: SEASON_ID
+              value: "2025/2026"
+            - name: COMP_ID
+              value: "EPL"
+            - name: SLEEP_BETWEEN_MATCHES
+              value: "5"
+            - name: VENUES_CSV_PATH
+              value: "/app/venues.csv"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+            runAsUser: 0
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+# -------------------- WEEKLY UPDATE CRONJOB --------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-weekly
+  labels:
+    app: etl-jobs
+spec:
+  schedule: "0 3 * * 1"
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: etl-jobs
+        spec:
+          restartPolicy: OnFailure
+          initContainers:
+            - name: wait-for-postgres
+              image: postgres:17-alpine
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DB_HOST
+                  value: "postgres"
+                - name: DB_PORT
+                  value: "5432"
+              command: ["sh", "-c"]
+              args:
+                - |
+                  echo "Waiting for Postgres at ${DB_HOST}:${DB_PORT} ..."
+                  until pg_isready -h "${DB_HOST}" -p "${DB_PORT}"; do
+                    sleep 3
+                  done
+                  echo "Postgres is ready."
+          containers:
+            - name: etl
+              image: ghcr.io/tamhid92/epl-etl:latest
+              imagePullPolicy: IfNotPresent
+              args: ["update"]
+              env:
+                - name: DB_HOST
+                  value: "postgres"
+                - name: DB_PORT
+                  value: "5432"
+                - name: DB_NAME
+                  valueFrom:
+                    configMapKeyRef:
+                      name: db-config
+                      key: DB_NAME
+                - name: DB_USER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: db-config
+                      key: DB_SUPERUSER
+                - name: DB_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secrets
+                      key: POSTGRES_PASSWORD
+                - name: LOG_LEVEL
+                  value: "INFO"
+                - name: SQLALCHEMY_ECHO
+                  value: "false"
+                - name: SEASON_ID
+                  value: "2025/2026"
+                - name: COMP_ID
+                  value: "EPL"
+                - name: SLEEP_BETWEEN_MATCHES
+                  value: "5"
+                - name: VENUES_CSV_PATH
+                  value: "/app/venues.csv"
+              resources:
+                requests:
+                  cpu: "200m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

@@ -1,0 +1,51 @@
+---
+# tasks file for docker
+- name: Upgrade all apt packages
+  apt:
+    force_apt_get: yes
+    upgrade: dist
+
+- name: Install Packages
+  apt:
+    name: "{{ item }}"
+    state: latest
+  loop:
+    - wget
+    - apt-transport-https
+    - ca-certificates
+    - curl
+    - software-properties-common
+
+- name: Add Docker GPG apt Key and Repo
+  shell: |
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+    $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+    tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+- name: Install docker
+  apt:
+    name: "{{ item }}"
+    state: latest
+    update_cache: true
+  loop:
+    - docker-ce 
+    - docker-ce-cli 
+    - containerd.io 
+    - docker-buildx-plugin 
+    - docker-compose-plugin
+    - python3-docker
+    - docker-compose
+
+- name: Ensure group "somegroup" exists
+  ansible.builtin.group:
+    name: docker
+    state: present
+
+- name: Add the user to group of docker
+  ansible.builtin.user:
+    name: "{{ ansible_ssh_user }}"
+    group: docker

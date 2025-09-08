@@ -1,0 +1,93 @@
+---
+
+- name: Ensure dependencies are installed.
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - python3-debian
+    state: present
+
+- name: Add Kubernetes repository.
+  deb822_repository:
+    name: kubernetes
+    types: deb
+    uris: "{{ kubernetes_apt_repository }}"
+    suites: /
+    signed_by: "{{ kubernetes_apt_repository }}/Release.key"
+  register: kubernetes_repository
+
+- name: Update Apt cache.
+  apt:
+    update_cache: true
+  when: kubernetes_repository.changed
+
+- name: Add Kubernetes apt preferences file to pin a version.
+  template:
+    src: apt-preferences-kubernetes.j2
+    dest: /etc/apt/preferences.d/kubernetes
+    mode: 0644
+
+- name: Ensure dependencies are installed.
+  package: name=curl state=present
+
+- name: Install Kubernetes packages.
+  package:
+    name: "{{ item.name | default(item) }}"
+    state: "{{ item.state | default('present') }}"
+  notify: restart kubelet
+  with_items: "{{ kubernetes_packages }}"
+
+- include_tasks: sysctl-setup.yml
+
+
+- name: Ensure kubelet is started and enabled at boot.
+  service:
+    name: kubelet
+    state: started
+    enabled: true
+
+- name: Check if Kubernetes has already been initialized.
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubernetes_init_stat
+
+# Set up control plane.
+- include_tasks: control-plane-setup.yml
+  when: kubernetes_role == 'control_plane'
+
+# Set up nodes.
+- name: Get the kubeadm join command from the Kubernetes control plane.
+  command: kubeadm token create --print-join-command
+  changed_when: false
+  when: kubernetes_role == 'control_plane'
+  register: kubernetes_join_command_result
+
+- name: Set the kubeadm join command globally.
+  set_fact:
+    kubernetes_join_command: >
+      {{ kubernetes_join_command_result.stdout }}
+      {{ kubernetes_join_command_extra_opts }}
+  when: kubernetes_join_command_result.stdout is defined
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  with_items: "{{ groups['all'] }}"
+
+- include_tasks: node-setup.yml
+  when: kubernetes_role == 'node'
+
+- name: "Creating .kube directory"
+  shell: "mkdir -p $HOME/.kube"
+  become_user: ubuntu
+  when: kubernetes_role == 'control_plane'
+
+- name: "Copying /etc/kubernetes/admin.conf $HOME/.kube/config"
+  shell: "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config"
+  become_user: ubuntu
+  when: kubernetes_role == 'control_plane'
+  ignore_errors: true
+
+- name: "changing owner permission"
+  shell: "sudo chown $(id -u):$(id -g) $HOME/.kube/config"
+  become_user: ubuntu
+  when: kubernetes_role == 'control_plane'

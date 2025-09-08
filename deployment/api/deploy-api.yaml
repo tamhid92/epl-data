@@ -1,0 +1,317 @@
+# =========================
+# API CONFIG (FQDN for DB host)
+# =========================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: epl-api-config
+  namespace: epl-data
+data:
+  DB_HOST: "postgres.epl-data.svc"
+  DB_PORT: "5432"
+  DB_POOL_MIN: "1"
+  DB_POOL_MAX: "10"
+  DEFAULT_PAGE_LIMIT: "200"
+  MAX_PAGE_LIMIT: "1000"
+  CORS_ENABLED: "false"
+  CORS_ORIGINS: ""
+
+---
+# =========================
+# DEPLOYMENT
+# =========================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: epl-api
+  namespace: epl-data
+  labels:
+    app: epl-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: epl-api
+  template:
+    metadata:
+      labels:
+        app: epl-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ---- Wait for Postgres to resolve and accept connections
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: DB_HOST }
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: DB_PORT }
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef: { name: db-config, key: DB_NAME }
+            - name: DB_USER
+              valueFrom:
+                configMapKeyRef: { name: db-config, key: DB_SUPERUSER }
+          command: ["sh","-lc"]
+          args:
+            - |
+              set -e
+              echo "Waiting for Postgres at ${DB_HOST}:${DB_PORT}…"
+              # 1) DNS must resolve
+              until getent hosts "${DB_HOST}" >/dev/null 2>&1; do
+                echo "DNS for ${DB_HOST} not ready…"; sleep 2;
+              done
+              echo "Resolved $(getent hosts "${DB_HOST}" | awk '{print $1}')"
+              # 2) Server must accept connections
+              until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -d "${DB_NAME:-postgres}" -U "${DB_USER}" -t 3; do
+                echo "pg_isready waiting…"; sleep 3;
+              done
+              echo "Postgres is ready."
+
+      containers:
+        - name: api
+          image: ghcr.io/tamhid92/epl-api:dev
+          imagePullPolicy: Always
+          ports:
+            - { containerPort: 8000, name: http }
+          env:
+            # DB name from your DB ConfigMap
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef: { name: db-config, key: DB_NAME }
+            # App config
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: DB_HOST }
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: DB_PORT }
+            - name: DB_POOL_MIN
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: DB_POOL_MIN }
+            - name: DB_POOL_MAX
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: DB_POOL_MAX }
+            - name: DEFAULT_PAGE_LIMIT
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: DEFAULT_PAGE_LIMIT }
+            - name: MAX_PAGE_LIMIT
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: MAX_PAGE_LIMIT }
+            - name: CORS_ENABLED
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: CORS_ENABLED }
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-auth
+                  key: API_TOKEN
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef: { name: epl-api-config, key: CORS_ORIGINS }
+            
+            - name: DB_USER
+              valueFrom:
+                configMapKeyRef: { name: db-config, key: DB_SUPERUSER }
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef: { name: postgres-secrets, key: POSTGRES_PASSWORD }
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: /prometheus_multiproc
+            # Logging
+            - { name: LOG_LEVEL, value: "INFO" }
+            - { name: LOG_JSON,  value: "true" }
+
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+
+          volumeMounts:
+            - { name: tmp,            mountPath: /tmp }
+            - { name: prom-multiproc, mountPath: /prometheus_multiproc }
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: prom-multiproc
+          emptyDir: {}
+
+---
+# =========================
+# SERVICE (ClusterIP)
+# =========================
+apiVersion: v1
+kind: Service
+metadata:
+  name: epl-api
+  namespace: epl-data
+  labels:
+    app: epl-api
+spec:
+  type: ClusterIP
+  selector:
+    app: epl-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+
+---
+# =========================
+# NETWORKING
+# =========================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epl-api-only-react
+  namespace: epl-data
+spec:
+  podSelector:
+    matchLabels:
+      app: epl-api
+  policyTypes: ["Ingress","Egress"]
+
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: epl-react
+      ports:
+        - protocol: TCP
+          port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { protocol: TCP, port: 8000 }
+
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
+
+---
+# =========================
+# NETWORK POLICY (allow Prometheus to scrape)
+# =========================
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: epl-api-allow-prometheus
+#   namespace: epl-data
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: epl-api
+#   policyTypes: ["Ingress"]
+#   ingress:
+#     - from:
+#         - namespaceSelector:
+#             matchLabels:
+#               kubernetes.io/metadata.name: monitoring
+#           podSelector:
+#             matchLabels:
+#               app.kubernetes.io/name: prometheus
+#       ports:
+#         - { protocol: TCP, port: 8000 }
+
+---
+# =========================
+# HPA (optional)
+# =========================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: epl-api
+  namespace: epl-data
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: epl-api
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# =========================
+# PROMETHEUS OPERATOR INTEGRATION
+# =========================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: epl-api
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames: ["epl-data"]
+  selector:
+    matchLabels:
+      app: epl-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true
+

@@ -1,0 +1,82 @@
+---
+- name: Create K8s Cluster
+  hosts: localhost
+  tasks:
+  - name: Wait for connection
+    wait_for_connection:
+      delay: 10
+      timeout: 300
+  
+  - name: Create VM names for Cluster
+    set_fact:
+      vm_names: "{{ vm_names | default(['k8-master']) + [ 'k8-node' + node_counter ] }}"
+    with_sequence: "start=1 end={{ worker_count }}"
+    loop_control:
+      loop_var: node_counter
+  
+  - name: Deploy K8 Cluster
+    import_tasks: tasks/terraform-k8-cluster.yml
+    vars:
+      vm_names: "{{ vm_names }}"
+      vm_size: "small"
+  
+
+- name: Create inventory file
+  hosts: pve
+  tasks:
+    - name: Get VMID
+      shell: |
+        qm list | grep k8-master | awk '{split($0,a," "); print a[1]}'
+      register: vmid_master
+      tags: always
+    - name: Get VM IP address
+      shell: |
+        qm guest cmd {{ vmid_master.stdout }} network-get-interfaces | jq  '.[1] | ."ip-addresses" | .[0] | ."ip-address"' | tr -d '"'
+      register: k8_ip_master
+      tags: always
+    
+    - name: Get VMID for workers
+      shell: |
+        qm list | grep k8-node{{ worker_counter }} | awk '{split($0,a," "); print a[1]}'
+      register: vmid_workers
+      with_sequence: "start=1 end={{ worker_count }}"
+      loop_control:
+        loop_var: worker_counter
+    - name: Get VM IP address for workers
+      shell: |
+        qm guest cmd {{ worker_vmid }} network-get-interfaces | jq  '.[1] | ."ip-addresses" | .[0] | ."ip-address"' | tr -d '"'
+      register: k8_ip_workers
+      with_items: "{{ vmid_workers.results | map(attribute='stdout') | list }}"
+      loop_control:
+        loop_var: worker_vmid
+
+    - name: Create inventory file
+      template:
+        src: k8-inventory.ini.j2
+        dest: "{{ playbook_dir }}/inventory/k8-cluster.ini"
+      vars:
+        ip_master: "{{ k8_ip_master.stdout }}"
+        ip_workers: "{{ k8_ip_workers.results | map(attribute='stdout') | list }}"
+      delegate_to: localhost
+
+
+# - name: Configure K8s Cluster
+#   hosts: localhost
+#   become: yes
+#   gather_facts: no
+
+#   tasks:
+#     - name: Configure K8 Master
+#       command: |
+#         ansible-playbook {{ playbook_dir }}/tasks/configure-vm.yml -i {{ playbook_dir }}/inventory/k8-cluster.ini
+#       become_user: ubuntu
+    
+#     - name: Copy TF Files To K8 Master
+#       shell: |
+#         scp -i ~/.ssh/id_ecdsa -o StrictHostKeyChecking=no ../k8-cluster/* root@{{ hostvars.pve.k8_ip_master.stdout }}:/home/TF_FILES/
+#       become_user: ubuntu
+
+    # - name: Install K8s
+    #   command: |
+    #     ansible-playbook {{ playbook_dir }}/install-k8-role.yml -i {{ playbook_dir }}/inventory/k8-cluster.ini
+    #   become_user: ubuntu

@@ -1,0 +1,35 @@
+# loki-pv.yaml  (PV is cluster-scoped)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: loki-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes: [ ReadWriteOnce ]
+  persistentVolumeReclaimPolicy: Retain
+  volumeMode: Filesystem
+  hostPath:
+    path: /var/lib/loki
+    type: DirectoryOrCreate
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["k8-master"]
+
+---
+# loki-pvc.yaml  (namespace-scoped)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-pvc
+  namespace: monitoring
+spec:
+  accessModes: [ ReadWriteOnce ]
+  resources:
+    requests:
+      storage: 10Gi
+  volumeName: loki-pv

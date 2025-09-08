@@ -1,0 +1,56 @@
+---
+- name: Create a VM folder
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../k8-cluster"
+    state: directory
+- name: Create TF vars file
+  template:
+    src: templates/create_cluster.tf.j2
+    dest: "{{ playbook_dir }}/../k8-cluster/create_cluster.tf"
+
+- name: Copy over TF files
+  copy:
+    src: "{{ playbook_dir }}/files/{{ item }}"
+    dest: "{{ playbook_dir }}/../k8-cluster/{{ item }}"
+  loop:
+    - provider.tf
+
+- name: Terraform init
+  command:
+    chdir: "{{ playbook_dir }}/../k8-cluster"
+    cmd: "terraform init"
+  environment:
+    TF_VAR_proxmox_api_token_id: "{{ lookup('env', 'TF_VAR_proxmox_api_token_id') }}"
+    TF_VAR_proxmox_api_token_secret: "{{ lookup('env', 'TF_VAR_proxmox_api_token_secret') }}"
+  register: terraform_init
+
+- name: Terraform init output
+  debug:
+    msg: "{{ terraform_init }}"
+
+- name: Terraform plan
+  command:
+    chdir: "{{ playbook_dir }}/../k8-cluster"
+    cmd: "terraform plan"
+  register: terraform_plan
+  environment:
+    TF_VAR_proxmox_api_token_id: "{{ lookup('env', 'TF_VAR_proxmox_api_token_id') }}"
+    TF_VAR_proxmox_api_token_secret: "{{ lookup('env', 'TF_VAR_proxmox_api_token_secret') }}"
+  register: terraform_plan
+
+- name: Terraform plan output
+  debug:
+    msg: "{{ terraform_plan }}"
+
+- name: Terraform apply
+  command:
+    chdir: "{{ playbook_dir }}/../k8-cluster"
+    cmd: "terraform apply -auto-approve"
+  environment:
+    TF_VAR_proxmox_api_token_id: "{{ lookup('env', 'TF_VAR_proxmox_api_token_id') }}"
+    TF_VAR_proxmox_api_token_secret: "{{ lookup('env', 'TF_VAR_proxmox_api_token_secret') }}"
+  register: terraform_apply
+
+- name: Terraform apply output
+  debug:
+    msg: "{{ terraform_apply }}"
