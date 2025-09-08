@@ -1,0 +1,40 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gh-runner
+  namespace: cicd
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: gh-runner }
+  template:
+    metadata:
+      labels: { app: gh-runner }
+    spec:
+      containers:
+        - name: runner
+          image: ghcr.io/<owner>/k8s-gh-runner:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            # Point at your repository (preferred) or org
+            - name: REPO_URL
+              value: "https://github.com/tamhid92/epl-data"
+            - name: GITHUB_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gh-runner-secrets
+                  key: GITHUB_ACCESS_TOKEN
+            - name: RUNNER_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: RUNNER_LABELS
+              value: "self-hosted,k8s"
+            - name: RUNNER_EPHEMERAL
+              value: "false"
+
+          volumeMounts:
+            - name: work
+              mountPath: /runner/_work
+      volumes:
+        - name: work
+          emptyDir: {}

@@ -1,0 +1,7 @@
+secretGenerator:
+  - name: gh-runner-secrets
+    namespace: cicd
+    envs:
+      - gh-runner.env
+generatorOptions:
+  disableNameSuffixHash: true
