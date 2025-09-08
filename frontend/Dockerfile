@@ -1,4 +1,8 @@
 # Build stage
+LABEL version="1.0" \
+        maintainer="Tamhid Chowdhury <tamhidchowdhury@gmail.com>" \
+        description="Web Application for English Premier League Data Analytics"
+
 FROM node:18-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
