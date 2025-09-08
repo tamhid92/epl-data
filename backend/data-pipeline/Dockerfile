@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1.7
 FROM python:3.12-slim
 
+LABEL version="1.0" \
+      maintainer="Tamhid Chowdhury <tamhidchowdhury@gmail.com>" \
+      description="Web Application for English Premier League Data Analytics"
+LABEL org.opencontainers.image.source https://github.com/tamhid92/epl-data
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

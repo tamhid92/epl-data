@@ -1,5 +1,10 @@
 FROM python:3.14-rc-slim
 
+LABEL version="1.0" \
+      maintainer="Tamhid Chowdhury <tamhidchowdhury@gmail.com>" \
+      description="Web Application for English Premier League Data Analytics"
+LABEL org.opencontainers.image.source https://github.com/tamhid92/epl-data
+
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

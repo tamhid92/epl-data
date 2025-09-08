@@ -1,11 +1,10 @@
 # .github/workflows/publish-ghcr.yaml
-name: Build & Publish images to GHCR (per-folder)
+name: Build & Publish images to GHCR
 
 on:
   push:
     branches:
-      - '**'          # run on any branch push
-    # no pull_request trigger (as requested)
+      - '**'
 
 permissions:
   contents: read
