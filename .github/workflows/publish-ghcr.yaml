@@ -172,3 +172,75 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  trigger-jenkins:
+    name: Trigger Jenkins after builds
+    needs: [changes, build-frontend, build-api, build-etl]
+    runs-on: [self-hosted, k8s]
+    if: always()
+    steps:
+      - name: Decide and guard
+        id: gate
+        env:
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+          API_CHANGED:      ${{ needs.changes.outputs.api }}
+          ETL_CHANGED:      ${{ needs.changes.outputs.etl }}
+          FRONTEND_RESULT:  ${{ needs.build-frontend.result }}
+          API_RESULT:       ${{ needs.build-api.result }}
+          ETL_RESULT:       ${{ needs.build-etl.result }}
+        run: |
+          set -euo pipefail
+          echo "changed: FE=$FRONTEND_CHANGED API=$API_CHANGED ETL=$ETL_CHANGED"
+          # If nothing changed, skip triggering Jenkins
+          if [[ "$FRONTEND_CHANGED" != "true" && "$API_CHANGED" != "true" && "$ETL_CHANGED" != "true" ]]; then
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If anything changed, ensure corresponding build(s) succeeded
+          fail=0
+          if [[ "$FRONTEND_CHANGED" == "true" && "$FRONTEND_RESULT" != "success" ]]; then
+            echo "Frontend changed but build result: $FRONTEND_RESULT"; fail=1
+          fi
+          if [[ "$API_CHANGED" == "true" && "$API_RESULT" != "success" ]]; then
+            echo "API changed but build result: $API_RESULT"; fail=1
+          fi
+          if [[ "$ETL_CHANGED" == "true" && "$ETL_RESULT" != "success" ]]; then
+            echo "ETL changed but build result: $ETL_RESULT"; fail=1
+          fi
+
+          if [[ $fail -eq 1 ]]; then
+            echo "One or more builds failed; not triggering Jenkins."
+            exit 1
+          fi
+
+          echo "no_changes=false" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Jenkins
+        if: steps.gate.outputs.no_changes == 'false'
+        env:
+          JENKINS_URL:   http://jenkins.jenkins.svc.cluster.local:8080
+          JENKINS_USER:  ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+          JENKINS_JOB:   "restart-epl-react"
+        run: |
+          set -euo pipefail
+          # Try to get crumb (works whether CSRF is on or off)
+          CRUMB_JSON="$(curl -sf --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${JENKINS_URL}/crumbIssuer/api/json" || true)"
+          if [[ -n "$CRUMB_JSON" ]]; then
+            CRUMB_HEADER="Jenkins-Crumb:$(echo "$CRUMB_JSON" | jq -r .crumb)"
+            EXTRA="-H ${CRUMB_HEADER}"
+          else
+            EXTRA=""
+          fi
+
+          # Optionally pass which components changed as params to the job
+          curl -sS -X POST --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            ${EXTRA} \
+            "${JENKINS_URL}/job/${JENKINS_JOB}/buildWithParameters" \
+            --data-urlencode "frontend_changed=${{ needs.changes.outputs.frontend }}" \
+            --data-urlencode "api_changed=${{ needs.changes.outputs.api }}" \
+            --data-urlencode "etl_changed=${{ needs.changes.outputs.etl }}"
+
+          echo "Triggered Jenkins job: ${JENKINS_JOB}"
