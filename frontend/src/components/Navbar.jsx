@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { Menu, BarChart3, Users2, Trophy, Search, CalendarDays, User, LineChart } from "lucide-react";
+import { Menu, BarChart3, Users2, Trophy, Search, CalendarDays, User, LineChart, Sun, Moon } from "lucide-react";
 import { motion } from "framer-motion";
 
 // Simple logo helper
@@ -36,9 +36,11 @@ export default function Navbar({
   onOpenResults,
   onOpenFixtures,
   onOpenPlayers,
-  onOpenStandings, // NEW
+  onOpenStandings,
   onOpenContact,
   onGoHome,
+  theme = "light",
+  onToggleTheme
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -245,7 +247,15 @@ export default function Navbar({
         </div>
 
         {/* Right spacer to keep brand/center balanced */}
-        <div className="ml-3 hidden shrink-0 md:block">
+        <div className="ml-3 hidden items-center gap-2 md:flex">
+          <button
+            onClick={onToggleTheme}
+            className="inline-flex items-center justify-center rounded-xl border border-zinc-200 px-2.5 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-800 dark:hover:bg-zinc-900"
+            aria-label="Toggle dark mode"
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
           <button
             onClick={() => onOpenContact?.()}
             className="inline-flex items-center gap-2 rounded-xl bg-fuchsia-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-fuchsia-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-500/40 dark:bg-fuchsia-500 dark:hover:bg-fuchsia-600"
@@ -282,6 +292,14 @@ export default function Navbar({
                 <span className="text-xs font-bold">xG</span>
               </div>
               <span className="text-lg font-semibold tracking-tight">{brand}</span>
+            </button>
+            <button
+              onClick={onToggleTheme}
+              className="rounded-xl px-3 py-1 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              aria-label="Toggle dark mode"
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
             <button
               className="rounded-xl px-3 py-1 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"

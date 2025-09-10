@@ -460,7 +460,6 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
     return () => { stop = true; };
   }, [apiBase]);
 
-  /* Derived per-team rows */
   const teamRows = useMemo(() => {
     const s = Array.isArray(standings) ? standings : [];
     return s.map((r) => {
@@ -672,7 +671,6 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
     );
   }
 
-  /* ─────────────── Bumpy Chart helpers ─────────────── */
   const bumpy = useMemo(() => {
     if (!weeklyData?.weeks?.length || !Array.isArray(weeklyData.teams)) return null;
     const weeks = weeklyData.weeks;
@@ -686,6 +684,8 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
 
   function BumpyTip({ active, payload, label, hoverTeam }) {
     if (!active || !payload || !payload.length) return null;
+    if (!hoverTeam) return null;
+
     const item =
       (hoverTeam && payload.find(p => (p.name || p.dataKey) === hoverTeam)) ||
       payload.find(p => p?.payload?.team) ||
@@ -734,7 +734,6 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
   const ROW_PX = 32;
   const chartHeight = Math.max(560, (bumpy?.teamCount || 20) * ROW_PX);
 
-  // Build points for logo layer at the right edge of the chart
   const rightLogoPoints = useMemo(() => {
     if (!bumpy) return [];
     const weeks = bumpy.weeks;
@@ -749,14 +748,14 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
       .filter(Boolean);
   }, [bumpy]);
 
-  // Custom point renderer (logo) for the Scatter
+
   const LogoShape = (props) => {
     const { cx, cy, payload } = props;
     const team = payload?.team;
     const selected = selectedTeam && team === selectedTeam;
     const dim = selectedTeam && !selected ? 0.35 : 1;
 
-    // Shift left by the logo width so the right edge sits ON the axis line
+
     const tx = (cx ?? 0) - 24;
     const ty = cy ?? 0;
 
@@ -772,6 +771,14 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
           <rect x={30} y={-12} width={24} height={24} rx={12} ry={12}
                 fill="none" stroke={themeColor} strokeWidth={2} />
         ) : null}
+        <circle
+          cx={42}
+          cy={0}
+          r={12}
+          fill="#FFFFFF"
+          stroke="#E5E7EB"
+          strokeWidth={1}
+        />
         <image
           href={logoUrl(team)}
           xlinkHref={logoUrl(team)}
@@ -961,7 +968,7 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                 </ResponsiveContainer>
               </div>
               <div className="mt-1 text-[11px] text-zinc-500">
-                Click a line, dot, or a logo to highlight a team. Y-axis is inverted so top = 1.
+                Click a line, dot, or a logo to highlight a team.
               </div>
             </>
           )}
@@ -1177,6 +1184,7 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
   );
 }
 
+
 /* ───────────────────────────── Main App ───────────────────────────── */
 export default function App() {
   const [modalOpen, setModalOpen] = useState(false);
@@ -1189,10 +1197,26 @@ export default function App() {
   const [playersOpen, setPlayersOpen] = useState(false);
   const [playersInitial, setPlayersInitial] = useState(null);
   const [contactOpen, setContactOpen] = useState(false);
+
+  // ── Theme (light/dark) ───────────────────────────────────────────
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem("theme");
+      if (saved === "dark" || saved === "light") return saved;
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+    } catch { return "light"; }
+  });
+
   useEffect(() => {
-    document.documentElement.classList.remove('dark');
-    document.documentElement.style.colorScheme = 'light';
-  }, []);
+    const root = document.documentElement;
+    if (theme === "dark") root.classList.add("dark");
+    else root.classList.remove("dark");
+    try { localStorage.setItem("theme", theme); } catch {}
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(t => (t === "dark" ? "light" : "dark"));
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -1218,13 +1242,98 @@ export default function App() {
     [standings]
   );
 
-  function openTeam(name) { setModalTeamName(name); setModalOpen(true); }
-  function openMatch(id) { setActiveMatchId(String(id)); setMatchCenterOpen(true); }
-  function openPlayer(teamName, playerId) { setPlayersInitial({ team: teamName, playerId: String(playerId) }); setPlayersOpen(true); }
+  function openTeam(name) {
+    setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setPlayersOpen(false); setContactOpen(false);
+    setModalTeamName(name);
+    setModalOpen(true);
+    setRoute(`#team=${encodeURIComponent(name)}`);
+  }
+  function openMatch(id) {
+    const mid = String(id);
+    setActiveMatchId(mid);
+    setMatchCenterOpen(true);
+    setRoute(`#match=${mid}`);
+  }
+  function openPlayer(teamName, playerId) {
+    const team = typeof teamName === "string" ? teamName : (teamName?.team || "");
+    const pid  = playerId != null ? String(playerId) : undefined;
+    setPlayersInitial(team ? { team, playerId: pid } : null);
+    setPlayersOpen(true);
+    // If team available, include in hash for deep-linking
+    setRoute(pid ? `#players=${encodeURIComponent(`${team}:${pid}`)}` :
+             team ? `#players=${encodeURIComponent(team)}` : "#players");
+  }
   function scrollToId(id) {
     const el = document.getElementById(id);
     if (el) { try { el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch { el.scrollIntoView(); } }
   }
+  // ────────────────── Lightweight modal <-> URL hash sync ──────────────────
+  const setRoute = (hash) => {
+    // Avoid duplicate entries when already at hash
+    if (window.location.hash === hash) return;
+    try { history.pushState({}, "", hash); } catch {}
+  };
+
+  const clearRoute = (replace=false) => {
+    try {
+      if (replace) history.replaceState({}, "", "#");
+      else history.pushState({}, "", "#");
+    } catch {}
+  };
+
+  const applyHash = () => {
+    const h = (window.location.hash || "").trim();
+    // Close everything first
+    setModalOpen(false);
+    setResultsModalOpen(false);
+    setFixturesModalOpen(false);
+    setPlayersOpen(false);
+    setMatchCenterOpen(false);
+    setContactOpen(false);
+    setPlayersInitial(null);
+    setActiveMatchId(null);
+    setModalTeamName(null);
+
+    if (!h || h === "#") return;
+
+    // #team=Arsenal
+    if (h.startsWith("#team=")) {
+      const name = decodeURIComponent(h.slice(6));
+      if (name) { setModalTeamName(name); setModalOpen(true); }
+      return;
+    }
+    // #match=12345
+    if (h.startsWith("#match=")) {
+      const id = h.slice(7);
+      if (id) { setActiveMatchId(String(id)); setMatchCenterOpen(true); }
+      return;
+    }
+    // #players (optionally #players=Arsenal or #players=Arsenal:42)
+    if (h.startsWith("#players")) {
+      const v = h.includes("=") ? h.split("=")[1] : "";
+      if (v) {
+        const [team, playerId] = decodeURIComponent(v).split(":");
+        setPlayersInitial(team ? { team, playerId: playerId ? String(playerId) : undefined } : null);
+      }
+      setPlayersOpen(true);
+      return;
+    }
+    if (h === "#fixtures") { setFixturesModalOpen(true); return; }
+    if (h === "#results")  { setResultsModalOpen(true);  return; }
+    if (h === "#contact")  { setContactOpen(true);       return; }
+  };
+
+  useEffect(() => {
+    // On initial load: open whatever hash points to
+    applyHash();
+    const onPop = () => applyHash();
+    window.addEventListener("popstate", onPop);
+    window.addEventListener("hashchange", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("hashchange", onPop);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-zinc-50 to-white text-zinc-900 dark:from-zinc-950 dark:to-zinc-900 dark:text-zinc-100">
@@ -1244,22 +1353,25 @@ export default function App() {
       <Navbar
         brand="Premier League Dashboard"
         teams={teams}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onOpenTeam={openTeam}
-        onOpenResults={() => setResultsModalOpen(true)}
-        onOpenFixtures={() => setFixturesModalOpen(true)}
-        onOpenPlayers={() => setPlayersOpen(true)}
+        onOpenResults={() => { setResultsModalOpen(true); setModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setPlayersOpen(false); setContactOpen(false); setRoute("#results"); }}
+        onOpenFixtures={() => { setFixturesModalOpen(true); setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setPlayersOpen(false); setContactOpen(false); setRoute("#fixtures"); }}
+        onOpenPlayers={() => { setPlayersOpen(true); setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setContactOpen(false); setRoute("#players"); }}
         onOpenStandings={() => scrollToId("league-standings")}
-        onOpenContact={() => setContactOpen(true)}
+        onOpenContact={() => { setContactOpen(true); setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setPlayersOpen(false); setRoute("#contact"); }}
         onGoHome={() => {
           setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false);
           setFixturesModalOpen(false); setPlayersOpen(false); setContactOpen(false);
+          clearRoute(true)
         }}
       />
 
       <main className="px-4 pt-4 pb-10 md:px-6">
         {/* Recent results */}
         <div className="mt-8">
-          <RecentResults apiBase={API_BASE} onOpenMatch={openMatch} onShowAll={() => setResultsModalOpen(true)} />
+          <RecentResults apiBase={API_BASE} onOpenMatch={openMatch} onShowAll={() => { setResultsModalOpen(true); setRoute("#results"); }} />
         </div>
 
         {/* Upcoming fixtures */}
@@ -1267,7 +1379,7 @@ export default function App() {
           <div className="mb-2 flex items-center justify-between gap-2">
             <h2 className="text-lg font-semibold">Upcoming Fixtures</h2>
             <button
-              onClick={() => setFixturesModalOpen(true)}
+              onClick={() => { setFixturesModalOpen(true); setRoute("#fixtures"); }}
               className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
             >
               View full fixture list

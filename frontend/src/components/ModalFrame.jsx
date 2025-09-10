@@ -1,5 +1,5 @@
 // components/ModalFrame.jsx
-import React from "react";
+import React, { useEffect } from "react";
 
 /**
  * Generic centered modal frame that stays under a sticky navbar.
@@ -12,10 +12,21 @@ import React from "react";
 export default function ModalFrame({ open, onClose, maxWidth = "max-w-5xl", children }) {
   if (!open) return null;
 
+  const requestClose = () => {
+    try { history.back(); } catch { onClose?.(); }
+  };
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") requestClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="fixed inset-0 z-[90]">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      {/* <div className="absolute inset-0 bg-black/60" onClick={onClose} /> */}
+      <div className="absolute inset-0 bg-black/60" onClick={requestClose} />
 
       {/* 
         Container under navbar:

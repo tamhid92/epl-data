@@ -10,7 +10,11 @@ export default function ContactModal({
   ownerIntro,     // short paragraph about your background
 }) {
   useEffect(() => {
-    function onKey(e) { if (e.key === "Escape") onClose?.(); }
+    function onKey(e) {
+      if (e.key === "Escape") {
+        try { history.back(); } catch { onClose?.(); }
+      } 
+    }
     if (open) document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
@@ -37,7 +41,8 @@ export default function ContactModal({
   return (
     <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40" onClick={() => onClose?.()} />
+      {/* <div className="absolute inset-0 bg-black/40" onClick={() => onClose?.()} /> */}
+      <div className="absolute inset-0 bg-black/40" onClick={() => { try { history.back(); } catch { onClose?.(); } }} />
 
       {/* Modal */}
       <div className="relative z-[501] w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-4 shadow-2xl dark:border-zinc-800 dark:bg-zinc-950">
@@ -45,8 +50,7 @@ export default function ContactModal({
           <h3 className="text-base font-semibold">Contact</h3>
           <button
             className="rounded-lg p-1.5 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
-            onClick={() => onClose?.()}
-            aria-label="Close contact modal"
+            onClick={() => { try { history.back(); } catch { onClose?.(); } }} aria-label="Close contact modal"
           >
             <X className="h-5 w-5" />
           </button>

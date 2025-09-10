@@ -163,7 +163,12 @@ export default function TeamModal({
   }, [open]);
   useEffect(() => {
     if (!open) return;
-    const onKey = (e) => e.key === "Escape" && onClose?.();
+    // const onKey = (e) => e.key === "Escape" && onClose?.();
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        try { history.back(); } catch { onClose?.(); }
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
@@ -349,7 +354,7 @@ export default function TeamModal({
           </div>
           <button
             ref={closeRef}
-            onClick={onClose}
+            onClick={() => { try { history.back(); } catch { onClose?.(); } }}
             className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
           >
             Close
