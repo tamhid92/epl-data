@@ -39,7 +39,7 @@ jobs:
               - 'backend/data-pipeline/**'
 
   build-frontend:
-    name: Build frontend → ghcr.io/<owner>/epl-frontend-react:staging
+    name: Build frontend → ghcr.io/tamhid92/epl-frontend-react:staging
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
@@ -87,7 +87,7 @@ jobs:
             VITE_API_TOKEN=${{ secrets.VITE_API_TOKEN }}
 
   build-api:
-    name: Build API → ghcr.io/<owner>/epl-api:staging
+    name: Build API → ghcr.io/tamhid92/epl-api:staging
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
@@ -132,7 +132,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-etl:
-    name: Build ETL → ghcr.io/<owner>/epl-etl:staging
+    name: Build ETL → ghcr.io/tamhid92/epl-etl:staging
     needs: changes
     if: needs.changes.outputs.etl == 'true'
     runs-on: ubuntu-latest
