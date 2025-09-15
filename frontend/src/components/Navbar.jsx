@@ -115,7 +115,7 @@ export default function Navbar({
             aria-label="Go to top"
           >
             <div className="grid h-8 w-8 place-items-center rounded-xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900">
-              <span className="text-xs font-bold">xG</span>
+              <span className="text-xs font-bold">TC</span>
             </div>
             <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
               {brand}
@@ -261,7 +261,7 @@ export default function Navbar({
             className="inline-flex items-center gap-2 rounded-xl bg-fuchsia-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-fuchsia-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-500/40 dark:bg-fuchsia-500 dark:hover:bg-fuchsia-600"
             aria-label="Open contact modal"
           >
-            Contact
+            About
           </button>
         </div>
       </nav>
@@ -339,20 +339,12 @@ export default function Navbar({
               <User className="mr-2 inline h-4 w-4" />
               Players
             </button>
-            {/* NEW: Analysis */}
-            <button
-              onClick={() => { onOpenStandings?.(); setMobileOpen(false); }}
-              className="col-span-2 rounded-lg border border-zinc-200 px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:border-zinc-800 dark:hover:bg-zinc-900"
-            >
-              <LineChart className="mr-2 inline h-4 w-4" />
-              League Analysis
-            </button>
             {/* NEW: Contact CTA (mobile) */}
               <button
                 onClick={() => { onOpenContact?.(); setMobileOpen(false); }}
                 className="col-span-2 rounded-lg bg-fuchsia-600 px-3 py-2 text-left text-sm font-semibold text-white hover:bg-fuchsia-700 dark:bg-fuchsia-500 dark:hover:bg-fuchsia-600"
               >
-                Contact
+                About
               </button>
           </div>
 

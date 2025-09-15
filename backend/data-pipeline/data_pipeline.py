@@ -14,8 +14,13 @@ import ScraperFC as sfc
 from db_helper import Postgres
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, Connection
-
+from fbref_remote import FBrefRemote as FBref
 from epl_match import init_matches_all, upsert_match
+from fbref_ingest import ingest_fbref_bundle, ensure_alias_table, DEFAULT_ALIAS_SEEDS
+from typing import Dict, Tuple, Any, Iterable
+import link_understat_fbref as fb_us_xref
+import install_sql_func as sql_func
+import json
 
 # ---------------------- Logging (stdout) ----------------------
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -73,6 +78,7 @@ def get_db() -> Postgres:
 
 def get_understat() -> sfc.Understat:
     return sfc.Understat()
+
 
 def _safe_shape(df: pd.DataFrame | None) -> str:
     try:
@@ -161,6 +167,54 @@ def _emit_tables_for_category(all_data: dict, category: str, subcat_col: str):
                 "xG": against.get("xG"),
             })
     return pd.DataFrame(created_rows), pd.DataFrame(conceded_rows)
+
+def _df_to_jsonable(
+    df: pd.DataFrame,
+    orient: str = "records",
+    date_format: str = "iso",
+    double_precision: int = 10,
+) -> Any:
+    return json.loads(
+        df.to_json(
+            orient=orient,
+            date_format=date_format,
+            double_precision=double_precision,
+        )
+    )
+
+def dict_of_3tuple_dfs_to_json(
+    data: Dict[Any, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
+    item_names: Iterable[str] = ("first", "second", "third"),
+    *,
+    orient: str = "records",
+    date_format: str = "iso",
+    double_precision: int = 10,
+    ensure_ascii: bool = False,
+    indent: int | None = None,
+) -> str:
+    """
+    data: {key: (df1, df2, df3)} — each value MUST be a 3-tuple of DataFrames.
+    Drops level 0 from index/columns per `droplevel_where` before serialization.
+    """
+    names = list(item_names)
+    if len(names) < 3:
+        names = (names + ["item1", "item2", "item3"])[:3]
+
+    out: Dict[Any, Any] = {}
+    for k, v in data.items():
+        if not isinstance(v, tuple) or len(v) != 3:
+            raise ValueError(f"Value for key {k!r} must be a 3-tuple of DataFrames")
+        a, b, c = v
+        for i, df in enumerate((a, b, c)):
+            if not isinstance(df, pd.DataFrame):
+                raise TypeError(f"Tuple element {i} under key {k!r} is not a DataFrame")
+
+        sub = {}
+        for name, df in zip(names, (a, b, c)):
+            sub[name] = _df_to_jsonable(df, orient, date_format, double_precision)
+        out[k] = sub
+
+    return json.dumps(out, ensure_ascii=ensure_ascii, indent=indent)
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Jobs (self-contained; no module-level state)
@@ -383,6 +437,46 @@ def init_match_data():
     init_matches_all(all_match_data)
     logger.info("Initial match data inserted/upserted.")
 
+# =============================== FBRef ====================================
+
+@log_step
+def fbref_data():
+    fb = FBref(7)
+    logger.info("Scraping data from FBRef")
+    all_fbref_stats = fb.scrape_all_stats("2025-2026", COMP_ID)
+    
+    js_out = dict_of_3tuple_dfs_to_json(
+        all_fbref_stats,
+        item_names=("team", "vs_team", "players"),
+        orient="records",
+        indent=2,
+    )
+    
+    fbref_ingest_from_bundle(json.loads(js_out))
+
+
+@log_step
+def fbref_ingest_from_bundle(all_fbref_stats: dict):
+    engine = get_engine()
+
+    ensure_alias_table(engine, DEFAULT_ALIAS_SEEDS)
+
+    # ingest_fbref_bundle(engine, all_fbref_stats, category="standard", if_exists="replace")
+
+    for cat in ['standard', 'goalkeeping', 'shooting', 'passing', 'pass types', 'goal and shot creation', 'defensive', 'possession']:
+        if cat in all_fbref_stats:
+            ingest_fbref_bundle(engine, all_fbref_stats, category=cat, if_exists="replace")
+    
+    fb_us_xref.build_xrefs(engine)
+
+# ==========================================================================
+@log_step
+def install_sql_functions():
+    engine = get_engine()
+    logger.info("Installing Helper SQL Funtions and Indexes")
+    sql_func.install(engine)
+
+
 @log_step
 def update_match_data():
     db = get_db()
@@ -438,7 +532,10 @@ def init_db():
     build_teams_data(season_data)
     logger.debug("Pause before match init…")
     time.sleep(5)
+    fbref_data()
     init_match_data()
+    install_sql_functions()
+    
 
 @log_step
 def update_db():
@@ -457,6 +554,8 @@ def update_db():
     update_player_db(season_data)
     update_fixture_list(season_data)
     build_teams_data(season_data)
+    time.sleep(5)
+    fbref_data()
 
 def _main():
     logger.info("Pipeline start: COMP_ID=%s SEASON_ID=%s", COMP_ID, SEASON_ID)

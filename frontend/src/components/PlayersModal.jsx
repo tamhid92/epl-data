@@ -6,27 +6,34 @@ import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
   RadialBarChart, RadialBar,
+  PieChart, Pie, Legend
 } from "recharts";
-import { HelpCircle } from "lucide-react";
+import { HelpCircle, Filter as FilterIcon, Search as SearchIcon, Shield, User2 } from "lucide-react";
 
 const API_TOKEN = import.meta.env.VITE_API_TOKEN;
 
-/* ---------- tiny hover helper ---------- */
+/* ---------- tiny click-to-open helper (mobile-friendly) ---------- */
 function HelpHint({ text, className = "" }) {
+  const [open, setOpen] = useState(false);
   return (
     <span className={`relative inline-flex items-center ${className}`}>
       <button
         type="button"
-        className="group inline-flex items-center justify-center rounded-full p-0.5 text-zinc-500 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 dark:text-zinc-400 dark:hover:text-zinc-200"
+        onClick={() => setOpen(v => !v)}
+        className="inline-flex items-center justify-center rounded-full p-0.5 text-zinc-500 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 dark:text-zinc-400 dark:hover:text-zinc-200"
         aria-label="What is this?"
         title={text}
       >
         <HelpCircle className="h-4 w-4" />
-        {/* custom tooltip */}
-        <span className="pointer-events-none absolute left-1/2 top-[125%] z-30 hidden w-64 -translate-x-1/2 rounded-md border border-zinc-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-zinc-700 shadow-lg group-hover:block dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">
+      </button>
+      {open && (
+        <span
+          className="absolute left-1/2 top-[120%] z-30 w-64 -translate-x-1/2 rounded-md border border-zinc-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-zinc-700 shadow-lg dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+          onClick={() => setOpen(false)}
+        >
           {text}
         </span>
-      </button>
+      )}
     </span>
   );
 }
@@ -72,23 +79,107 @@ function percentile(v, arr) {
 /* ---------- help text for metrics ---------- */
 const HELP = {
   Minutes: "Total minutes played. Per-90 rates below normalize stats per full match to compare different playing times.",
-  Goals: "Goals scored. Penalties included if applicable to your dataset.",
+  Goals: "Goals scored.",
   Assists: "Assists credited.",
-  xG: "Expected Goals: quality of chances taken, independent of finishing. Sum across minutes.",
-  xA: "Expected Assists: likelihood that a pass becomes a goal. Sum across minutes.",
-  "xG/90": "Expected Goals per 90 minutes. Higher means the player consistently gets good shooting chances.",
-  "xA/90": "Expected Assists per 90 minutes. Higher means the player consistently creates good chances for teammates.",
-  "Shots/90": "Shots taken per 90 minutes.",
-  "KP/90": "Key Passes per 90 minutes: passes leading directly to a shot.",
-  "xGBuildup/90": "Non-shot involvement in moves that end in a shot (excludes shots & key passes). Proxy for buildup contribution.",
-  "xGChain/90": "Any involvement in shot-ending sequences (includes shots & key passes). Proxy for total chance involvement.",
-  "xG/90 percentile": "Percentile vs league peers (prefer same position). 100% = top of the group for xG per 90.",
-  "xA/90 percentile": "Percentile vs league peers (prefer same position). 100% = top of the group for xA per 90.",
-  "Percentile bars":
-    "Horizontal bars show where the player ranks for each metric vs league peers (position-aware where possible).",
-  "Profile Radar":
-    "Radar shows the player’s percentile profile across metrics at a glance. Larger area = stronger relative performance.",
+  xG: "Expected Goals: shot quality independent of finishing.",
+  xA: "Expected Assists: pass quality leading to shots.",
+  "xG/90": "Expected Goals per 90 minutes.",
+  "xA/90": "Expected Assists per 90 minutes.",
+  "Shots/90": "Shots taken per 90.",
+  "KP/90": "Key passes per 90 (passes leading directly to a shot).",
+  "xGBuildup/90": "Non-shot involvement in shot-ending moves (excludes shots & key passes).",
+  "xGChain/90": "Any involvement in shot-ending moves (includes shots & key passes).",
+  "xG/90 percentile": "Percentile vs league peers (position-aware).",
+  "xA/90 percentile": "Percentile vs league peers (position-aware).",
+  "Percentile bars": "Where the player ranks vs peers for core per-90 metrics.",
+  "Profile Radar": "Percentile profile across per-90 metrics.",
+  "SCA vs GCA": "Shot-Creating Actions (SCA) and Goal-Creating Actions (GCA) per 90 from FBref.",
+  "SCA Types": "How the player creates shots: passes (live/dead), dribbles (take-ons), shots creating rebounds, fouls won, or defensive actions.",
+  "Passing Accuracy": "Completion % by pass distance (short/medium/long).",
+  "Dead vs Live": "Share of passes taken from dead-ball situations (free kicks, corners) vs live play.",
+  "Progression Split": "How the player advances the ball: progressive passes vs progressive carries per 90.",
+  "Touches Map": "Where the player is most involved: touches by third & penalty areas (normalized).",
+  "Shooting Profile": "Shooting volume/accuracy per 90 and average shot distance.",
+  "Defensive Activity": "Tackles+Interceptions, blocks per 90 and duel/tackle success.",
 };
+
+/* ---------- FBref player parser ---------- */
+function parseFbrefPlayer(raw) {
+  const node = Array.isArray(raw) ? raw[0] : raw;
+  const root = node?.get_player_all_stats || node || {};
+  const fb = root.fbref || {};
+  const std = fb.standard || {};
+  const shoot = fb.shooting || {};
+  const gsc = fb.goal_and_shot_creation || {};
+  const pass = fb.passing || {};
+  const ptype = fb.pass_types || {};
+  const poss = fb.possession || {};
+  const def = fb.defensive || {};
+
+  const n90 = num(std.playing_time_90s || 0) || 0;
+  const div = (a, b) => (b > 0 ? a / b : 0);
+
+  const totalPass =
+    num(pass.total_att) ||
+    (num(pass.short_att) + num(pass.medium_att) + num(pass.long_att));
+
+  const pct = (n, d) => (d > 0 ? (n / d) * 100 : 0);
+
+  const t_def3 = num(poss.touches_def_3rd);
+  const t_mid3 = num(poss.touches_mid_3rd);
+  const t_att3 = num(poss.touches_att_3rd);
+  const t_attPen = num(poss.touches_att_pen);
+  const t_defPen = num(poss.touches_def_pen);
+  const t_live = num(poss.touches_live);
+  const touchSum = t_def3 + t_mid3 + t_att3 + t_attPen + t_defPen || 1;
+
+  return {
+    n90,
+    sca90: num(gsc.sca_sca90 || (num(gsc.sca_sca) && n90 ? gsc.sca_sca / n90 : 0)),
+    gca90: num(gsc.gca_gca90 || (num(gsc.gca_gca) && n90 ? gsc.gca_gca / n90 : 0)),
+    sca_types: {
+      passlive: num(gsc.sca_types_passlive || 0),
+      passdead: num(gsc.sca_types_passdead || 0),
+      drib: num(gsc.sca_types_to || 0),
+      sh: num(gsc.sca_types_sh || 0),
+      fld: num(gsc.sca_types_fld || 0),
+      def: num(gsc.sca_types_def || 0),
+    },
+    cmpPctShort: num(pass.short_cmppct || 0),
+    cmpPctMed: num(pass.medium_cmppct || 0),
+    cmpPctLong: num(pass.long_cmppct || 0),
+    kp: num(pass.kp || 0),
+    prgp: num(pass.prgp || 0),
+    deadShare: pct(num(ptype.pass_types_dead || 0), totalPass),
+    cross: num(ptype.pass_types_crs || 0),
+    sw: num(ptype.pass_types_sw || 0),
+    tb: num(ptype.pass_types_tb || 0),
+    progPass90: div(num(pass.prgp || 0), n90),
+    progCarry90: div(num(poss.carries_prgc || 0), n90),
+    touchShare: {
+      DefPen: (t_defPen / touchSum) * 100,
+      Def3: (t_def3 / touchSum) * 100,
+      Mid3: (t_mid3 / touchSum) * 100,
+      Att3: (t_att3 / touchSum) * 100,
+      AttPen: (t_attPen / touchSum) * 100,
+    },
+    touchesLive: t_live,
+    sh90: num(shoot.standard_sh_90 || (num(shoot.standard_sh) && n90 ? shoot.standard_sh / n90 : 0)),
+    sot90: num(shoot.standard_sot_90 || (num(shoot.standard_sot) && n90 ? shoot.standard_sot / n90 : 0)),
+    sotPct: num(shoot.standard_sotpct || 0),
+    dist: num(shoot.standard_dist || 0),
+    pk: num(shoot.standard_pk || 0),
+    pkatt: num(shoot.standard_pkatt || 0),
+    tklInt90: div(num(def.tklplusint || 0), n90),
+    blocks90: div(num(def.blocks_blocks || 0), n90),
+    duelWinPct: num(def.challenges_tklpct || 0),
+    tklThirds90: {
+      Def3: div(num(def.tackles_def_3rd || 0), n90),
+      Mid3: div(num(def.tackles_mid_3rd || 0), n90),
+      Att3: div(num(def.tackles_att_3rd || 0), n90),
+    },
+  };
+}
 
 /* ---------- main ---------- */
 export default function PlayersModal({
@@ -96,49 +187,43 @@ export default function PlayersModal({
   apiBase,
   teams = [],
   onClose,
-  /** NEW: preselect when opened from TeamModal */
   initialTeam,
   initialPlayerId,
-  initialPlayerName, // optional fallback by name
+  initialPlayerName,
 }) {
   const closeRef = useRef(null);
 
-  // All players across league
+  // All players across league (Understat list)
   const [allPlayers, setAllPlayers] = useState([]);
   const [loadingAll, setLoadingAll] = useState(false);
   const [errAll, setErrAll] = useState(null);
 
-  // Filters
-  const [teamFilter, setTeamFilter] = useState(""); // "" = All
-  const [posFilter, setPosFilter] = useState("");   // "" = All | GK | D | M | F
+  // Filters (shared mobile & desktop)
+  const [teamFilter, setTeamFilter] = useState("");
+  const [posFilter, setPosFilter] = useState("");
   const [query, setQuery] = useState("");
 
-  // Selected player
+  // Selected player id
   const [selectedId, setSelectedId] = useState(null);
   const selected = useMemo(
     () => allPlayers.find((p) => String(p.id) === String(selectedId)) || null,
     [allPlayers, selectedId]
   );
 
-  // Keep refs to list items to scroll selected into view
-  const itemRefs = useRef(new Map());
-  useEffect(() => {
-    if (!open || !selectedId) return;
-    const el = itemRefs.current.get(String(selectedId));
-    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [selectedId, open]);
+  // FBref player details (fetched per selected player name)
+  const [fbPlayer, setFbPlayer] = useState(null);
+  const [loadingFb, setLoadingFb] = useState(false);
 
-  // Adopt preselect when opening / when initial props change
+  // Adopt preselect when opening
   useEffect(() => {
     if (!open) return;
     setTeamFilter(initialTeam || "");
     setPosFilter("");
     setQuery("");
     if (initialPlayerId) setSelectedId(String(initialPlayerId));
-    // If we only have a name, we'll try to match after fetch completes.
   }, [open, initialTeam, initialPlayerId]);
 
-  // Fetch everyone (concurrent by team), prioritizing the initial team first so the preselected player is ready ASAP
+  // Fetch everyone (concurrent by team), prioritizing the initial team
   useEffect(() => {
     if (!open || !apiBase || !teams?.length) return;
     let cancelled = false;
@@ -148,7 +233,6 @@ export default function PlayersModal({
         setLoadingAll(true);
         setErrAll(null);
 
-        // Put initialTeam at the front of the queue
         const queue = [...teams];
         if (initialTeam) {
           const idx = queue.indexOf(initialTeam);
@@ -194,7 +278,7 @@ export default function PlayersModal({
               });
             }
           } catch {
-            // ignore a single team’s failure
+            // ignore single team failure
           }
         }
 
@@ -203,13 +287,10 @@ export default function PlayersModal({
             const t = queue.shift();
             await run(t);
             if (cancelled) return;
-            // As results accumulate, update state in batches for responsiveness
             setAllPlayers((prev) => {
-              const merged = prev.length ? prev : [];
-              // We don't want duplicates if state updates multiple times
-              const seen = new Set(merged.map((p) => `${p.team}|${p.id}`));
+              const seen = new Set(prev.map((p) => `${p.team}|${p.id}`));
               const newOnes = results.filter((p) => !seen.has(`${p.team}|${p.id}`));
-              const out = [...merged, ...newOnes];
+              const out = [...prev, ...newOnes];
               out.sort((a, b) => b.time - a.time);
               return out;
             });
@@ -217,17 +298,14 @@ export default function PlayersModal({
         });
 
         await Promise.all(workers);
-
         if (cancelled) return;
 
-        // Finalize (ensure sorted)
         setAllPlayers((prev) => {
           const out = [...prev];
           out.sort((a, b) => b.time - a.time);
           return out;
         });
 
-        // If we only had a name to preselect, try to pick it now
         if (!initialPlayerId && initialPlayerName) {
           const hit = results.find(
             (p) =>
@@ -248,30 +326,51 @@ export default function PlayersModal({
     };
   }, [open, apiBase, teams, initialTeam, initialPlayerId, initialPlayerName]);
 
-  // Visible list by filter & search
+  // Visible set by filter & search
   const filtered = useMemo(() => {
     let arr = allPlayers;
     if (teamFilter) arr = arr.filter((p) => p.team === teamFilter);
     if (posFilter)  arr = arr.filter((p) => p._bucket === posFilter);
     if (query.trim()) {
       const q = query.trim().toLowerCase();
-      arr = arr.filter(
-        (p) =>
-          p.player_name.toLowerCase().includes(q) ||
-          p.team.toLowerCase().includes(q)
+      arr = arr.filter((p) =>
+        p.player_name.toLowerCase().includes(q) ||
+        p.team.toLowerCase().includes(q)
       );
     }
     return arr;
   }, [allPlayers, teamFilter, posFilter, query]);
 
-  // Keep a selection, but DO NOT override an explicit preselection
+  // Ensure selection stays in sync with filters
   useEffect(() => {
     if (!open) return;
-    if (!filtered.length) return;
-    if (selectedId == null) {
-      setSelectedId(filtered[0].id);
-    }
-  }, [filtered, open, selectedId]);
+    if (!filtered.length) { setSelectedId(null); return; }
+    const stillVisible = filtered.some((p) => String(p.id) === String(selectedId));
+    if (!stillVisible) setSelectedId(filtered[0].id);
+  }, [filtered, open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FBref fetch for selected player (by name)
+  useEffect(() => {
+    if (!open) return;
+    const name = selected?.player_name;
+    if (!name || !apiBase) { setFbPlayer(null); return; }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoadingFb(true);
+        const raw = await fetchJson(`${apiBase}/fbref/player/${encodeURIComponent(name)}`);
+        if (cancelled) return;
+        setFbPlayer(parseFbrefPlayer(raw));
+      } catch {
+        if (!cancelled) setFbPlayer(null); // silent fallback
+      } finally {
+        if (!cancelled) setLoadingFb(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [open, apiBase, selected?.player_name]);
 
   // Position-aware distributions for percentiles
   const dist = useMemo(() => {
@@ -309,8 +408,10 @@ export default function PlayersModal({
 
   if (!open) return null;
 
+  const playerOptions = filtered.map((p) => ({ id: p.id, label: `${p.player_name} — ${p.team}` }));
+
   return (
-    <ModalFrame open={open} onClose={onClose} maxWidth="max-w-5xl">
+    <ModalFrame open={open} onClose={onClose} maxWidth="max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
         <div className="flex items-center gap-3">
@@ -333,52 +434,42 @@ export default function PlayersModal({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            ref={closeRef}
-            onClick={() => { try { history.back(); } catch { onClose?.(); } }}
-            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
-          >
-            Close
-          </button>
-        </div>
+        <button
+          ref={closeRef}
+          onClick={() => { try { history.back(); } catch { onClose?.(); } }}
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+        >
+          Close
+        </button>
       </div>
 
-      {/* Body */}
-      <div className="grid max-h-[calc(100vh-180px)] grid-rows-[1fr] gap-4 overflow-hidden p-4">
-        <div className="grid grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[0.85fr_1.35fr]">
-          {/* LEFT: Filters + list */}
-          <div className="min-h-0 overflow-y-auto rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800">
-            {/* Filters */}
-            <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {/* Team select with logo */}
-              <div className="flex items-center gap-2">
-                {teamFilter && (
-                  <img
-                    src={logoUrl(teamFilter)}
-                    alt=""
-                    className="h-6 w-6 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
-                    onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
-                  />
-                )}
-                <select
-                  value={teamFilter}
-                  onChange={(e) => { setTeamFilter(e.target.value); }}
-                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40 dark:border-zinc-700 dark:bg-zinc-900"
-                  title="Filter by team"
-                >
-                  <option value="">All teams</option>
-                  {teams.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-              </div>
+      {/* Unified Filter Bar (desktop + mobile) */}
+      <div className="sticky top-0 z-10 border-b border-zinc-200 bg-white/70 backdrop-blur p-3 dark:border-zinc-800 dark:bg-zinc-950/70">
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-12">
+          {/* Team */}
+          <div className="md:col-span-4">
+            <div className="flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+              <Shield className="h-4 w-4 opacity-70" />
+              <select
+                value={teamFilter}
+                onChange={(e) => { setTeamFilter(e.target.value); }}
+                className="w-full bg-transparent outline-none"
+                title="Filter by team"
+              >
+                <option value="">All teams</option>
+                {teams.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
 
-              {/* Position filter */}
+          {/* Position */}
+          <div className="md:col-span-2">
+            <div className="flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+              <User2 className="h-4 w-4 opacity-70" />
               <select
                 value={posFilter}
-                onChange={(e) => setPosFilter(e.target.value)}
-                className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40 dark:border-zinc-700 dark:bg-zinc-900"
+                onChange={(e) => { setPosFilter(e.target.value); }}
+                className="w-full bg-transparent outline-none"
                 title="Filter by position"
               >
                 <option value="">All positions</option>
@@ -387,96 +478,83 @@ export default function PlayersModal({
                 <option value="M">M</option>
                 <option value="F">F</option>
               </select>
+            </div>
+          </div>
 
-              {/* Search */}
+          {/* Search */}
+          <div className="md:col-span-3">
+            <label className="flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+              <SearchIcon className="h-4 w-4 opacity-70" />
               <input
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search players or teams…"
-                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/40 dark:border-zinc-700 dark:bg-zinc-900"
+                onChange={(e) => { setQuery(e.target.value); }}
+                placeholder="Search player or team…"
+                className="w-full bg-transparent outline-none"
               />
-            </div>
+            </label>
+          </div>
 
-            {/* List */}
-            {filtered.length === 0 ? (
-              <p className="text-sm text-zinc-500">No players match your filters.</p>
-            ) : (
-              <ul className="space-y-2">
-                {filtered.map((p) => (
-                  <li key={p.id} ref={(el) => { if (el) itemRefs.current.set(String(p.id), el); }}>
-                    <button
-                      onClick={() => setSelectedId(String(p.id))}
-                      className={cx(
-                        "flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition hover:shadow-sm",
-                        String(p.id) === String(selectedId)
-                          ? "border-indigo-500 bg-indigo-50/60 dark:border-indigo-400 dark:bg-indigo-900/20"
-                          : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
-                      )}
-                      title={p.player_name}
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <img
-                          src={logoUrl(p.team)}
-                          alt=""
-                          className="h-6 w-6 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
-                          onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
-                        />
-                        <div className="min-w-0">
-                          <div className="truncate text-[13px] font-semibold">{p.player_name}</div>
-                          <div className="text-[10px] text-zinc-500">
-                            {p.team} • {p.position || "—"} • Min <span className="tabular-nums">{p.time}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-4 gap-1 text-center">
-                        <Chip label="G"  val={p.goals} help="Goals scored." />
-                        <Chip label="A"  val={p.assists} help="Assists credited." />
-                        <Chip label="xG" val={fmt2(p.xG)} help={HELP["xG"]} />
-                        <Chip label="xA" val={fmt2(p.xA)} help={HELP["xA"]} />
-                      </div>
-                    </button>
-                  </li>
+          {/* Player selector */}
+          <div className="md:col-span-3">
+            <div className="flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+              <FilterIcon className="h-4 w-4 opacity-70" />
+              <select
+                value={selectedId || ""}
+                onChange={(e) => setSelectedId(e.target.value || null)}
+                className="w-full bg-transparent outline-none"
+                title="Select player"
+              >
+                <option value="" disabled>
+                  {playerOptions.length ? "Choose a player…" : "No players match your filters"}
+                </option>
+                {playerOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>{opt.label}</option>
                 ))}
-              </ul>
-            )}
+              </select>
+            </div>
           </div>
+        </div>
+      </div>
 
-          {/* RIGHT: Details & visuals */}
-          <div className="min-h-0 overflow-y-auto rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800">
-            {!selected ? (
-              <p className="text-sm text-zinc-500">Select a player to view details.</p>
-            ) : (
-              <PlayerDetails
-                p={selected}
-                pct={{
-                  xG90: percentile(
-                    selected.xG90,
-                    (dist.xG90[selected._bucket]?.length ? dist.xG90[selected._bucket] : dist.xG90.ALL)
-                  ),
-                  xA90: percentile(
-                    selected.xA90,
-                    (dist.xA90[selected._bucket]?.length ? dist.xA90[selected._bucket] : dist.xA90.ALL)
-                  ),
-                  Shots90: percentile(
-                    selected.Shots90,
-                    (dist.Shots90[selected._bucket]?.length ? dist.Shots90[selected._bucket] : dist.Shots90.ALL)
-                  ),
-                  KP90: percentile(
-                    selected.KP90,
-                    (dist.KP90[selected._bucket]?.length ? dist.KP90[selected._bucket] : dist.KP90.ALL)
-                  ),
-                  xGBuildup90: percentile(
-                    selected.xGBuildup90,
-                    (dist.xGBuildup90[selected._bucket]?.length ? dist.xGBuildup90[selected._bucket] : dist.xGBuildup90.ALL)
-                  ),
-                  xGChain90: percentile(
-                    selected.xGChain90,
-                    (dist.xGChain90[selected._bucket]?.length ? dist.xGChain90[selected._bucket] : dist.xGChain90.ALL)
-                  ),
-                }}
-              />
-            )}
-          </div>
+      {/* Body */}
+      <div className="max-h-[calc(100vh-230px)] overflow-y-auto p-4">
+        {/* Details & visuals only (more room!) */}
+        <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800">
+          {!selected ? (
+            <p className="text-sm text-zinc-500">Use the filters above to choose a player.</p>
+          ) : (
+            <PlayerDetails
+              p={selected}
+              fb={fbPlayer}
+              loadingFb={loadingFb}
+              pct={{
+                xG90: percentile(
+                  selected.xG90,
+                  (dist.xG90[selected._bucket]?.length ? dist.xG90[selected._bucket] : dist.xG90.ALL)
+                ),
+                xA90: percentile(
+                  selected.xA90,
+                  (dist.xA90[selected._bucket]?.length ? dist.xA90[selected._bucket] : dist.xA90.ALL)
+                ),
+                Shots90: percentile(
+                  selected.Shots90,
+                  (dist.Shots90[selected._bucket]?.length ? dist.Shots90[selected._bucket] : dist.Shots90.ALL)
+                ),
+                KP90: percentile(
+                  selected.KP90,
+                  (dist.KP90[selected._bucket]?.length ? dist.KP90[selected._bucket] : dist.KP90.ALL)
+                ),
+                xGBuildup90: percentile(
+                  selected.xGBuildup90,
+                  (dist.xGBuildup90[selected._bucket]?.length ? dist.xGBuildup90[selected._bucket] : dist.xGBuildup90.ALL)
+                ),
+                xGChain90: percentile(
+                  selected.xGChain90,
+                  (dist.xGChain90[selected._bucket]?.length ? dist.xGChain90[selected._bucket] : dist.xGChain90.ALL)
+                ),
+              }}
+            />
+          )}
         </div>
       </div>
     </ModalFrame>
@@ -497,7 +575,7 @@ function Chip({ label, val, help }) {
 }
 
 /* ---------- details ---------- */
-function PlayerDetails({ p, pct }) {
+function PlayerDetails({ p, pct, fb, loadingFb }) {
   const statCards = [
     { k: "Minutes", v: p.time },
     { k: "Goals", v: p.goals },
@@ -531,6 +609,96 @@ function PlayerDetails({ p, pct }) {
   ];
 
   const gaugeData = (val) => [{ name: "pct", value: Math.round(val * 100) }];
+
+  // --- FBref derived datasets (if available) ---
+  const scaVsGca = useMemo(() => {
+    if (!fb) return [];
+    return [
+      { k: "SCA/90", v: fb.sca90, color: "#10B981" },
+      { k: "GCA/90", v: fb.gca90, color: "#F59E0B" },
+    ];
+  }, [fb]);
+
+  const scaTypesPie = useMemo(() => {
+    if (!fb) return [];
+    const t = fb.sca_types || {};
+    const order = [
+      { key: "passlive", label: "Pass (live)", c: "#3B82F6" },
+      { key: "passdead", label: "Pass (dead)", c: "#6366F1" },
+      { key: "drib", label: "Dribble", c: "#22C55E" },
+      { key: "sh", label: "Shot (rebound)", c: "#EF4444" },
+      { key: "fld", label: "Fouled", c: "#F97316" },
+      { key: "def", label: "Defensive", c: "#A855F7" },
+    ];
+    return order
+      .map((o) => ({ name: o.label, value: num(t[o.key] || 0), fill: o.c }))
+      .filter((x) => x.value > 0);
+  }, [fb]);
+
+  const passCmpData = useMemo(() => {
+    if (!fb) return [];
+    return [
+      { k: "Short", v: fb.cmpPctShort, c: "#10B981" },
+      { k: "Medium", v: fb.cmpPctMed, c: "#22D3EE" },
+      { k: "Long", v: fb.cmpPctLong, c: "#F43F5E" },
+    ];
+  }, [fb]);
+
+  const deadLivePie = useMemo(() => {
+    if (!fb) return [];
+    const dead = Math.max(0, Math.min(100, fb.deadShare || 0));
+    const live = Math.max(0, 100 - dead);
+    return [
+      { name: "Live play", value: live, fill: "#0EA5E9" },
+      { name: "Dead-ball", value: dead, fill: "#A78BFA" },
+    ];
+  }, [fb]);
+
+  const progSplit = useMemo(() => {
+    if (!fb) return [];
+    return [
+      { k: "Prog passes /90", v: fb.progPass90, c: "#0EA5E9" },
+      { k: "Prog carries /90", v: fb.progCarry90, c: "#84CC16" },
+    ];
+  }, [fb]);
+
+  const touchesByZone = useMemo(() => {
+    if (!fb) return [];
+    const t = fb.touchShare || {};
+    return [
+      { k: "Def Pen", v: t.DefPen || 0, c: "#64748B" },
+      { k: "Def 1/3", v: t.Def3 || 0, c: "#60A5FA" },
+      { k: "Middle 1/3", v: t.Mid3 || 0, c: "#22C55E" },
+      { k: "Att 1/3", v: t.Att3 || 0, c: "#F59E0B" },
+      { k: "Att Pen", v: t.AttPen || 0, c: "#EF4444" },
+    ];
+  }, [fb]);
+
+  const shootingProfile = useMemo(() => {
+    if (!fb) return [];
+    return [
+      { k: "Shots/90", v: fb.sh90, c: "#0EA5E9" },
+      { k: "SoT/90", v: fb.sot90, c: "#10B981" },
+      { k: "SoT%", v: fb.sotPct, c: "#A78BFA", isPct: true },
+      { k: "Avg dist (m)", v: fb.dist, c: "#F97316" },
+    ];
+  }, [fb]);
+
+  const defensiveBoard = useMemo(() => {
+    if (!fb) return { rows: [], thirds: [] };
+    return {
+      rows: [
+        { label: "Tkl+Int /90", v: fb.tklInt90, c: "#8B5CF6", max: 8 },
+        { label: "Blocks /90", v: fb.blocks90, c: "#64748B", max: 6 },
+        { label: "Duel Win%", v: fb.duelWinPct, c: "#22C55E", max: 100, isPct: true },
+      ],
+      thirds: [
+        { k: "Def 1/3", v: fb.tklThirds90?.Def3 || 0, c: "#60A5FA" },
+        { k: "Mid 1/3", v: fb.tklThirds90?.Mid3 || 0, c: "#22C55E" },
+        { k: "Att 1/3", v: fb.tklThirds90?.Att3 || 0, c: "#F59E0B" },
+      ]
+    };
+  }, [fb]);
 
   return (
     <div className="space-y-4">
@@ -581,7 +749,7 @@ function PlayerDetails({ p, pct }) {
         />
       </div>
 
-      {/* percentile bars (fast & readable) */}
+      {/* percentile bars */}
       <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800" title={HELP["Percentile bars"]}>
         <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
           <span>Percentile bars</span>
@@ -622,6 +790,265 @@ function PlayerDetails({ p, pct }) {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* ───────────────────────── FBref STORY PANELS ───────────────────────── */}
+      {(loadingFb || fb) && (
+        <div className="space-y-4">
+          {/* SCA vs GCA + SCA Types */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-1">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>Creation (FBref)</span>
+                <HelpHint text={HELP["SCA vs GCA"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb ? (
+                <div className="text-sm text-zinc-500">No FBref player data.</div>
+              ) : (
+                <div className="h-40">
+                  <ResponsiveContainer>
+                    <BarChart data={scaVsGca} margin={{ left: 16, right: 8, top: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="k" tick={{ fontSize: 12 }} />
+                      <YAxis />
+                      <Tooltip formatter={(v) => [fmt2(v), "per 90"]} />
+                      <Bar dataKey="v" radius={[6, 6, 0, 0]}>
+                        {scaVsGca.map((d, i) => <Cell key={i} fill={d.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-2">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>SCA Types Breakdown</span>
+                <HelpHint text={HELP["SCA Types"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb || !scaTypesPie.length ? (
+                <div className="text-sm text-zinc-500">No SCA type data.</div>
+              ) : (
+                <div className="h-40">
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie data={scaTypesPie} dataKey="value" nameKey="name" innerRadius="55%" outerRadius="90%" paddingAngle={2}>
+                        {scaTypesPie.map((s, i) => <Cell key={i} fill={s.fill} />)}
+                      </Pie>
+                      <Tooltip formatter={(v, n) => [v, n]} />
+                      <Legend verticalAlign="bottom" height={24} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Passing: accuracy ladder + dead vs live */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-2">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>Passing Accuracy by Distance</span>
+                <HelpHint text={HELP["Passing Accuracy"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb ? (
+                <div className="text-sm text-zinc-500">No FBref passing data.</div>
+              ) : (
+                <div className="h-44">
+                  <ResponsiveContainer>
+                    <BarChart data={passCmpData} margin={{ left: 16, right: 12, top: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="k" />
+                      <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                      <Tooltip formatter={(v) => [`${fmt2(v)}%`, "Cmp%"]} />
+                      <Bar dataKey="v" radius={[6, 6, 0, 0]}>
+                        {passCmpData.map((d, i) => <Cell key={i} fill={d.c} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-1">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>Dead vs Live Share</span>
+                <HelpHint text={HELP["Dead vs Live"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb ? (
+                <div className="text-sm text-zinc-500">No FBref pass-type data.</div>
+              ) : (
+                <div className="h-44">
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie data={deadLivePie} dataKey="value" nameKey="name" innerRadius="60%" outerRadius="90%" paddingAngle={3}>
+                        {deadLivePie.map((s, i) => <Cell key={i} fill={s.fill} />)}
+                      </Pie>
+                      <Tooltip formatter={(v, n) => [`${fmt2(v)}%`, n]} />
+                      <Legend verticalAlign="bottom" height={24} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Progression split + Touches by zone */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-1">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>Progression Split</span>
+                <HelpHint text={HELP["Progression Split"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb ? (
+                <div className="text-sm text-zinc-500">No FBref progression data.</div>
+              ) : (
+                <div className="h-40">
+                  <ResponsiveContainer>
+                    <BarChart data={progSplit} margin={{ left: 16, right: 12, top: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="k" />
+                      <YAxis />
+                      <Tooltip formatter={(v) => [fmt2(v), "per 90"]} />
+                      <Bar dataKey="v" radius={[6, 6, 0, 0]}>
+                        {progSplit.map((d, i) => <Cell key={i} fill={d.c} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-2">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>Touches by Zone (share)</span>
+                <HelpHint text={HELP["Touches Map"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb ? (
+                <div className="text-sm text-zinc-500">No FBref touches data.</div>
+              ) : (
+                <div className="h-44">
+                  <ResponsiveContainer>
+                    <BarChart data={touchesByZone} margin={{ left: 16, right: 12, top: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="k" />
+                      <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                      <Tooltip formatter={(v) => [`${fmt2(v)}%`, "Share"]} />
+                      <Bar dataKey="v" radius={[6, 6, 0, 0]}>
+                        {touchesByZone.map((d, i) => <Cell key={i} fill={d.c} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Shooting + Defensive */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-2">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>Shooting Profile</span>
+                <HelpHint text={HELP["Shooting Profile"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb ? (
+                <div className="text-sm text-zinc-500">No FBref shooting data.</div>
+              ) : (
+                <div className="h-44">
+                  <ResponsiveContainer>
+                    <BarChart data={shootingProfile} margin={{ left: 16, right: 12, top: 8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="k" />
+                      <YAxis />
+                      <Tooltip
+                        formatter={(v, n, obj) => [
+                          obj.payload.isPct ? `${fmt2(v)}%` : fmt2(v),
+                          obj.payload.isPct ? "Rate" : "Value",
+                        ]}
+                      />
+                      <Bar dataKey="v" radius={[6, 6, 0, 0]}>
+                        {shootingProfile.map((d, i) => <Cell key={i} fill={d.c} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              {fb && (fb.pkatt || fb.pk) ? (
+                <div className="mt-1 text-[11px] text-zinc-500">
+                  Penalties: {fb.pk} / {fb.pkatt} converted.
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800 md:col-span-1">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <span>Defensive Activity</span>
+                <HelpHint text={HELP["Defensive Activity"]} />
+              </div>
+              {loadingFb ? (
+                <div className="text-sm text-zinc-500">Loading…</div>
+              ) : !fb ? (
+                <div className="text-sm text-zinc-500">No FBref defensive data.</div>
+              ) : (
+                <>
+                  <div className="h-40">
+                    <ResponsiveContainer>
+                      <BarChart
+                        data={defensiveBoard.rows}
+                        layout="vertical"
+                        margin={{ left: 24, right: 12, top: 8, bottom: 0 }}
+                      >
+                        <CartesianGrid horizontal vertical={false} strokeDasharray="3 3" />
+                        <XAxis
+                          type="number"
+                          domain={[0, (dataMax) => Math.max(dataMax, 100)]}
+                          tickFormatter={(v, idx) => (idx === 2 ? `${v}%` : v)}
+                        />
+                        <YAxis dataKey="label" type="category" tick={{ fontSize: 11 }} width={92} />
+                        <Tooltip
+                          formatter={(v, n, obj) => [
+                            obj.payload.isPct ? `${fmt2(v)}%` : fmt2(v),
+                            n,
+                          ]}
+                        />
+                        <Bar dataKey="v" radius={[6, 6, 6, 6]}>
+                          {defensiveBoard.rows.map((d, i) => <Cell key={i} fill={d.c} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-2 h-36">
+                    <ResponsiveContainer>
+                      <BarChart data={defensiveBoard.thirds} margin={{ left: 16, right: 12, top: 8, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="k" />
+                        <YAxis />
+                        <Tooltip formatter={(v) => [fmt2(v), "per 90"]} />
+                        <Bar dataKey="v" radius={[6, 6, 0, 0]}>
+                          {defensiveBoard.thirds.map((d, i) => <Cell key={i} fill={d.c} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

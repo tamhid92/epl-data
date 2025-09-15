@@ -48,7 +48,7 @@ function logoUrl(team) {
  *  - teams?: string[]
  *  - onClose: () => void
  */
-export default function FixturesListModal({ open, apiBase, teams = [], onClose }) {
+export default function FixturesListModal({ open, apiBase, teams = [], onClose, onOpenMatch }) {
   const closeRef = useRef(null);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -178,7 +178,20 @@ export default function FixturesListModal({ open, apiBase, teams = [], onClose }
               {rows.map((m, idx) => (
                 <tr
                   key={m.id}
-                  className={idx % 2 ? "bg-zinc-50/40 dark:bg-zinc-900/30" : ""}
+                  className={
+                    "cursor-pointer hover:bg-zinc-50/80 dark:hover:bg-zinc-900/60 " +
+                    (idx % 2 ? "bg-zinc-50/40 dark:bg-zinc-900/30" : "")
+                  }
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => { onOpenMatch?.(m.id); onClose?.(); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpenMatch?.(m.id);
+                      onClose?.();
+                    }
+                  }}
                 >
                   {/* Date / time */}
                   <td className="px-3 py-2 whitespace-nowrap">
@@ -219,10 +232,6 @@ export default function FixturesListModal({ open, apiBase, teams = [], onClose }
             </tbody>
           </table>
         </div>
-
-        <p className="mt-2 px-1 text-xs text-zinc-500">
-          Showing upcoming fixtures from the API (soonest first).
-        </p>
       </div>
     </ModalFrame>
   );

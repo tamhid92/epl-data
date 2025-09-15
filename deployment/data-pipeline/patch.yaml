@@ -1,0 +1,96 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-init
+  labels:
+    app: etl-jobs
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: etl-jobs
+    spec:
+      restartPolicy: Never
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for Postgres at ${DB_HOST}:${DB_PORT} ..."
+              until pg_isready -h "${DB_HOST}" -p "${DB_PORT}"; do
+                sleep 3
+              done
+              echo "Postgres is ready."
+      containers:
+        # --- Your ETL container ---
+        - name: etl
+          image: ghcr.io/tamhid92/epl-etl:test
+          imagePullPolicy: Always
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              exec python /app/data_pipeline.py init
+          env:
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: DB_NAME
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: POSTGRES_PASSWORD
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: SQLALCHEMY_ECHO
+              value: "false"
+            - name: SEASON_ID
+              value: "2025/2026"
+            - name: COMP_ID
+              value: "EPL"
+            - name: SLEEP_BETWEEN_MATCHES
+              value: "5"
+            - name: VENUES_CSV_PATH
+              value: "/app/venues.csv"
+            - name: SELENIUM_URL
+              value: "http://localhost:4444"
+            - name: FBREF_WAIT_TIME
+              value: "7"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+            runAsUser: 0
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp

@@ -31,7 +31,6 @@ function logoUrl(team) {
   return `/logos/${encodeURIComponent(team)}.png`;
 }
 
-// Treat API "YYYY-MM-DD HH:mm:ss" as UTC -> local Date
 function parseUtcToLocal(utcStr) {
   const iso = utcStr.replace(" ", "T") + "Z";
   return new Date(iso);
@@ -52,8 +51,81 @@ function fmtTime(dt) {
 const safeDiv = (n, d) => (d ? n / d : 0);
 const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0));
 
-// chart palette (doesn't change tag/font colours)
 const COLORS = ["#6366F1","#F59E0B","#10B981","#EF4444","#3B82F6","#8B5CF6","#EC4899","#22D3EE","#84CC16","#14B8A6"];
+
+/* ---------- FBref parsers ---------- */
+const n = (v) => (Number.isFinite(+v) ? +v : 0);
+const pct = (num, den) => (den > 0 ? (num / den) * 100 : 0);
+
+function parseFbrefTeam(node) {
+  const obj  = node?.get_fbref_team || node || {};
+  const std  = obj.standard || {};
+  const gsc  = obj.goal_and_shot_creation || {};
+  const pass = obj.passing || {};
+  const ptyp = obj.pass_types || {};
+  const poss = obj.possession || {};
+  const def  = obj.defensive || {};
+  const gk   = obj.goalkeeping || {};
+
+  const n90  = n(std.playing_time_90s || gk.playing_time_90s);
+  const totalPass =
+    n(pass.total_att) ||
+    (n(pass.short_att) + n(pass.medium_att) + n(pass.long_att));
+
+  const div = (a,b)=> (b>0 ? a/b : 0);
+
+  return {
+    n90,
+    sca90: n(gsc.sca_sca90 || (n(gsc.sca_sca) && n90 ? gsc.sca_sca/n90 : 0)),
+    gca90: n(gsc.gca_gca90 || (n(gsc.gca_gca) && n90 ? gsc.gca_gca/n90 : 0)),
+    progPPer90: div(n(pass.prgp), n90),
+    progCPer90: div(n(poss.carries_prgc), n90),
+    boxTouchesPer90: div(n(poss.touches_att_pen), n90),
+    takeOnsPer90: div(n(poss.take_ons_att), n90),
+    takeOnSuccPct: n(poss.take_ons_succpct),
+    crossPer100: totalPass ? (n(ptyp.pass_types_crs) / totalPass) * 100 : 0,
+    shortShare: pct(n(pass.short_att), totalPass),
+    longShare:  pct(n(pass.long_att),  totalPass),
+    deadShare:  pct(n(ptyp.pass_types_dead), totalPass),
+    tklIntPer90: div(n(def.tklplusint), n90),
+    blocksPer90:  div(n(def.blocks_blocks), n90),
+    duelWinPct:   n(def.challenges_tklpct),
+    savePct:      n(gk.performance_savepct),
+  };
+}
+
+function parseFbrefVs(node) {
+  const obj  = node?.get_fbref_vs_team || node || {};
+  const vstd  = obj.standard || {};
+  const vgsc  = obj.goal_and_shot_creation || {};
+  const vpass = obj.passing || {};
+  const vptype= obj.pass_types || {};
+  const vposs = obj.possession || {};
+  const vdef  = obj.defensive || {};
+  const vgk   = obj.goalkeeping || {};
+
+  const n90  = n(vstd.playing_time_90s || vgk.playing_time_90s);
+  const passOppTotal =
+    n(vpass.total_att) ||
+    (n(vpass.short_att) + n(vpass.medium_att) + n(vpass.long_att));
+
+  const div = (a,b)=> (b>0 ? a/b : 0);
+
+  return {
+    n90,
+    ga90: n(vgk.performance_ga90 || (n(vgk.performance_ga) && n90 ? vgk.performance_ga/n90 : 0)),
+    oppSCA90: n(vgsc.sca_sca90 || (n(vgsc.sca_sca) && n90 ? vgsc.sca_sca/n90 : 0)),
+    oppGCA90: n(vgsc.gca_gca90 || (n(vgsc.gca_gca) && n90 ? vgsc.gca_gca/n90 : 0)),
+    oppProgPPer90: div(n(vpass.prgp), n90),
+    oppProgCPer90: div(n(vposs.carries_prgc), n90),
+    oppBoxTouchesPer90: div(n(vposs.touches_att_pen), n90),
+    oppCrossPer100: passOppTotal ? (n(vptype.pass_types_crs)/passOppTotal)*100 : 0,
+    duelWinPct: n(vdef.challenges_tklpct),
+    tklIntPer90: div(n(vdef.tklplusint), n90),
+    blocksPer90:  div(n(vdef.blocks_blocks), n90),
+    savePctOpp: n(vgk.performance_savepct),
+  };
+}
 
 /* ---------------- Team brand colours (for gradient) ---------------- */
 
@@ -80,29 +152,160 @@ const TEAM_COLORS = {
   "Sunderland": "#DC2626",
 };
 
-// hex → rgba
 function hexToRgba(hex, a = 1) {
   const h = hex?.replace?.("#", "") ?? "";
-  if (h.length !== 6) return `rgba(59,130,246,${a})`; // fallback sky-500
+  if (h.length !== 6) return `rgba(59,130,246,${a})`;
   const r = parseInt(h.slice(0,2), 16);
   const g = parseInt(h.slice(2,4), 16);
   const b = parseInt(h.slice(4,6), 16);
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
-/**
- * TeamModal
- * Props:
- *  - open: boolean
- *  - team?: object (optional if opening by name)
- *  - teamName?: string (optional if `team` provided)
- *  - apiBase: string
- *  - standingsEndpoint: string
- *  - onClose: () => void
- *  - onOpenMatch?: (matchId: string) => void
- *  - onOpenPlayer?: (teamName: string, playerObj: object) => void
- *  - teamColors?: Record<string, string>   // optional: override/extend TEAM_COLORS
- */
+
+/* ---------------- Tiny UI helpers ---------------- */
+
+function Pill({ children, intent = "default" }) {
+  const color =
+    intent === "good" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+    : intent === "warn" ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+    : intent === "bad"  ? "bg-rose-500/15 text-rose-700 dark:text-rose-300"
+    : "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300";
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${color}`}>
+      {children}
+    </span>
+  );
+}
+
+function GraphHeader({ title, help }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mb-2 flex items-center justify-between">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      {help ? (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            aria-expanded={open}
+            className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 text-zinc-600 hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            title="What is this?"
+          >
+            ?
+          </button>
+          {open && (
+            <div
+              className="absolute right-0 z-30 mt-2 w-64 rounded-md border border-zinc-200 bg-white p-2 text-xs leading-snug text-zinc-700 shadow-xl dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200"
+              role="dialog"
+            >
+              {help}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ---------------- Accessible Toggle (slider) ---------------- */
+
+function ToggleSwitch({ checked, onChange, label }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition
+        ${checked ? "bg-sky-600" : "bg-zinc-300 dark:bg-zinc-700"}`}
+      title={label}
+    >
+      <span
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition
+          ${checked ? "translate-x-5" : "translate-x-1"}`}
+      />
+      <span className="sr-only">{label}</span>
+    </button>
+  );
+}
+
+/* -------- Centered Efficiency Ring (donut) -------- */
+function GaugeRing({ label, value = 0, suffix = "%", color = "#10B981" }) {
+  const p = Math.max(0, Math.min(100, Number(value) || 0));
+  const data = [{ name: "v", value: p }, { name: "r", value: 100 - p }];
+  return (
+    <div className="rounded-2xl border border-zinc-200 p-3 shadow-sm dark:border-zinc-800">
+      <div className="relative h-36 w-full">
+        <ResponsiveContainer>
+          <PieChart>
+            <Pie
+              startAngle={90} endAngle={-270}
+              data={data} dataKey="value" nameKey="name"
+              innerRadius="68%" outerRadius="95%" stroke="none"
+            >
+              <Cell fill={color} />
+              <Cell fill="rgba(148,163,184,0.25)" />
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <div className="text-xl font-semibold tabular-nums">{Math.round(p)}{suffix}</div>
+          <div className="text-[11px] text-zinc-500">{label}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------- Compact two-series board (team vs opp) -------- */
+function DuoBoard({ rows }) {
+  // rows: [{label, team, opp, unit, max}]
+  return (
+    <div className="rounded-2xl border border-zinc-200 p-3 shadow-sm dark:border-zinc-800">
+      <div className="grid grid-cols-1 gap-3">
+        {rows.map((r, i) => {
+          const max = Math.max(1, r.max ?? Math.max(r.team, r.opp));
+          const tPct = (r.team / max) * 100;
+          const oPct = (r.opp / max) * 100;
+          return (
+            <div key={i}>
+              <div className="mb-1 flex items-center justify-between text-xs">
+                <span className="font-medium">{r.label}</span>
+                <span className="tabular-nums text-zinc-500">
+                  {r.team.toFixed(2)}{r.unit} • {r.opp.toFixed(2)}{r.unit}
+                </span>
+              </div>
+              <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+                <div className="h-full bg-sky-500/80" style={{ width: `${tPct}%` }} title="Team" />
+                <div className="mt-[2px] h-full bg-rose-500/70" style={{ width: `${oPct}%` }} title="Opponents vs this team" />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Simple Bars (CSS) ---------------- */
+
+function HBar({ value = 0, max = 1, label, suffix = "", className = "" }) {
+  const pctLocal = Math.max(0, Math.min(100, (value / Math.max(max, 1)) * 100));
+  return (
+    <div className={`w-full ${className}`}>
+      <div className="mb-1 flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-300">
+        <span>{label}</span>
+        <span className="tabular-nums">{typeof value === "number" ? value.toFixed?.(2) ?? value : value}{suffix}</span>
+      </div>
+      <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+        <div className="h-full bg-sky-500/80" style={{ width: `${pctLocal}%` }} />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Main Component ---------------- */
+
 export default function TeamModal({
   open,
   team,
@@ -114,13 +317,12 @@ export default function TeamModal({
   onOpenPlayer,
   teamColors,
 }) {
-  // ✅ Early return FIRST to keep hooks order stable
   if (!open || (!team && !teamName)) return null;
 
   const closeRef = useRef(null);
   const [tab, setTab] = useState("dashboard");
 
-  // Data for header stats (and rank) when opened by name
+  // Header basics + rank
   const [basicTeam, setBasicTeam] = useState(null);
 
   // Tab data
@@ -157,13 +359,18 @@ export default function TeamModal({
   const [loadingFormations, setLoadingFormations] = useState(false);
   const [errorFormations, setErrorFormations] = useState(null);
 
+  // FBref
+  const [fbref, setFbref] = useState(null);
+  const [fbrefVs, setFbrefVs] = useState(null);
+  const [loadingFbref, setLoadingFbref] = useState(false);
+  const [loadingFbrefVs, setLoadingFbrefVs] = useState(false);
+
   // Focus & ESC to close
   useEffect(() => {
     if (open && closeRef.current) closeRef.current.focus();
   }, [open]);
   useEffect(() => {
     if (!open) return;
-    // const onKey = (e) => e.key === "Escape" && onClose?.();
     const onKey = (e) => {
       if (e.key === "Escape") {
         try { history.back(); } catch { onClose?.(); }
@@ -229,6 +436,8 @@ export default function TeamModal({
     const ctrlFm = new AbortController();
     const ctrlRc = new AbortController();
     const ctrlSh = new AbortController();
+    const ctrlFbT = new AbortController();
+    const ctrlFbV = new AbortController();
 
     (async () => {
       try {
@@ -298,8 +507,39 @@ export default function TeamModal({
       finally { setLoadingShots(false); }
     })();
 
+    // FBref (team)
+    (async () => {
+      try {
+        setLoadingFbref(true);
+        const raw = await fetchJson(`${apiBase}/fbref/team/${encodeURIComponent(t)}`, { signal: ctrlFbT.signal });
+        const node = Array.isArray(raw) ? raw[0] : raw;
+        setFbref(parseFbrefTeam(node));
+      } catch (err) {
+        if (err.name !== "AbortError") console.error(err);
+        setFbref(null);
+      } finally {
+        setLoadingFbref(false);
+      }
+    })();
+
+    // FBref (vs_team)
+    (async () => {
+      try {
+        setLoadingFbrefVs(true);
+        const raw = await fetchJson(`${apiBase}/fbref/vs_team/${encodeURIComponent(t)}`, { signal: ctrlFbV.signal });
+        const node = Array.isArray(raw) ? raw[0] : raw;
+        setFbrefVs(parseFbrefVs(node));
+      } catch (err) {
+        if (err.name !== "AbortError") console.error(err);
+        setFbrefVs(null);
+      } finally {
+        setLoadingFbrefVs(false);
+      }
+    })();
+
     return () => {
       ctrlRoster.abort(); ctrlFix.abort(); ctrlCh.abort(); ctrlCc.abort(); ctrlFm.abort(); ctrlRc.abort(); ctrlSh.abort();
+      ctrlFbT.abort(); ctrlFbV.abort();
     };
   }, [open, apiBase, team, teamName]);
 
@@ -324,16 +564,15 @@ export default function TeamModal({
   const ga90 = safeDiv(GA, MP);
   const xg90 = safeDiv(+xG || 0, MP);
 
-  // 🎨 Team gradient background (starts at top-left → bottom-right)
+  // 🎨 Team gradient
   const colorMap = { ...TEAM_COLORS, ...(teamColors || {}) };
   const accentHex = colorMap[Team] || "#3B82F6";
   const gradientCss = `linear-gradient(to bottom right, ${hexToRgba(accentHex, 0.16)} 0%, rgba(0,0,0,0) 55%)`;
 
   return (
     <ModalFrame open={open} onClose={onClose} maxWidth="max-w-6xl">
-      {/* Wrapper gets the background image; no absolute overlays, so scrolling works */}
       <div
-        className="rounded-2xl flex max-h-[85vh] flex-col overflow-hidden"
+        className="rounded-2xl flex max-h[85vh] max-h-[85vh] flex-col overflow-hidden"
         style={{ backgroundImage: gradientCss, backgroundRepeat: "no-repeat" }}
       >
         {/* Header */}
@@ -355,22 +594,22 @@ export default function TeamModal({
           <button
             ref={closeRef}
             onClick={() => { try { history.back(); } catch { onClose?.(); } }}
-            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
           >
             Close
           </button>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs (more noticeable) */}
         <div className="mx-auto mt-2 w-full max-w-6xl px-4 md:px-6 flex-none">
-          <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
+          <div className="inline-flex rounded-xl bg-zinc-100/70 p-1 shadow-inner ring-1 ring-zinc-200 dark:bg-zinc-900/50 dark:ring-zinc-800">
             <TabButton active={tab === "dashboard"} onClick={() => setTab("dashboard")}>Dashboard</TabButton>
             <TabButton active={tab === "roster"} onClick={() => setTab("roster")}>Roster</TabButton>
             <TabButton active={tab === "fixtures"} onClick={() => setTab("fixtures")}>Fixtures</TabButton>
           </div>
         </div>
 
-        {/* Content (scrolls within panel) */}
+        {/* Content */}
         <div
           className="mx-auto w-full max-w-6xl flex-1 min-h-0 overflow-y-auto px-4 py-5 md:px-6"
           style={{ WebkitOverflowScrolling: "touch" }}
@@ -391,6 +630,10 @@ export default function TeamModal({
               shotsRaw={shotsRaw}
               loadingShots={loadingShots}
               errorShots={errorShots}
+              fbref={fbref}
+              fbrefVs={fbrefVs}
+              loadingFbref={loadingFbref}
+              loadingFbrefVs={loadingFbrefVs}
             />
           )}
           {tab === "roster" && (
@@ -417,20 +660,16 @@ function TabButton({ active, onClick, children }) {
   return (
     <button
       onClick={onClick}
-      className={`relative px-3 py-2 text-sm font-medium ${
-        active
-          ? "text-zinc-900 dark:text-zinc-100"
-          : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
-      }`}
+      className={`relative mx-0.5 rounded-lg px-3 py-2 text-sm font-medium transition
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500
+        ${active
+          ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-100 dark:ring-zinc-800"
+          : "text-zinc-600 hover:text-zinc-900 hover:bg-white/70 dark:text-zinc-300 dark:hover:text-zinc-100 dark:hover:bg-zinc-800/70"
+        }`}
       aria-selected={active}
       role="tab"
     >
       {children}
-      <span
-        className={`absolute left-0 right-0 bottom-0 h-[2px] rounded ${
-          active ? "bg-zinc-900 dark:bg-zinc-100" : "bg-transparent"
-        }`}
-      />
     </button>
   );
 }
@@ -441,36 +680,6 @@ function StatCard({ label, value, sub }) {
       <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
       {sub && <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{sub}</div>}
-    </div>
-  );
-}
-
-function Pill({ children, intent = "default" }) {
-  const color =
-    intent === "good" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-    : intent === "warn" ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-    : intent === "bad"  ? "bg-rose-500/15 text-rose-700 dark:text-rose-300"
-    : "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300";
-  return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${color}`}>
-      {children}
-    </span>
-  );
-}
-
-/* ---------------- Simple Bars (CSS) ---------------- */
-
-function HBar({ value = 0, max = 1, label, suffix = "", className = "" }) {
-  const pct = Math.max(0, Math.min(100, (value / Math.max(max, 1)) * 100));
-  return (
-    <div className={`w-full ${className}`}>
-      <div className="mb-1 flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-300">
-        <span>{label}</span>
-        <span className="tabular-nums">{typeof value === "number" ? value.toFixed?.(2) ?? value : value}{suffix}</span>
-      </div>
-      <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
-        <div className="h-full bg-sky-500/80" style={{ width: `${pct}%` }} />
-      </div>
     </div>
   );
 }
@@ -489,7 +698,6 @@ function MiniFixture({ f }) {
   );
 }
 
-/* Recent/form helpers */
 function resultLetter(m, teamName) {
   const isHome = m.home === teamName;
   const gf = isHome ? m.hg : m.ag;
@@ -512,6 +720,7 @@ function DashboardView({
   teamRecents, loadingRecents, errorRecents,
   onOpenMatch,
   shotsRaw, loadingShots, errorShots,
+  fbref, fbrefVs,
 }) {
   const { Team, MP, W, D, L, GF, GA, GD, Pts, xG, Pos } = base;
   const { ppm, gf90, ga90, xg90 } = derived;
@@ -692,10 +901,10 @@ function DashboardView({
       <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {/* Form Guide */}
         <div className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Form Guide (last 5)</h3>
-            {loadingRecents && <span className="text-xs text-zinc-500">Loading…</span>}
-          </div>
+          <GraphHeader
+            title="Form Guide (last 5)"
+            help="Win/Draw/Loss across the last five matches; oldest on the left. Click a recent match in the strip to open its match center."
+          />
           {errorRecents ? (
             <div className="text-sm text-rose-600">Failed to load recent results.</div>
           ) : last5.length === 0 ? (
@@ -726,9 +935,10 @@ function DashboardView({
 
         {/* Recent Results strip */}
         <div className="md:col-span-2 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Recent Results</h3>
-          </div>
+          <GraphHeader
+            title="Recent Results"
+            help="Scrollable recent matches. Click to open match details and advanced stats."
+          />
           {errorRecents ? (
             <div className="text-sm text-rose-600">Failed to load results.</div>
           ) : recentRows.length === 0 ? (
@@ -773,17 +983,67 @@ function DashboardView({
         </div>
       </section>
 
-      {/* Overview bars */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <HBar label="xG vs GF (delta)" value={Math.max(GF - (+xG || 0), 0)} max={Math.max(GF, +xG || 0, 1)} />
-        <HBar label="Goals For vs Against (GF share)" value={GF} max={GF + GA || 1} />
-      </div>
+      {/* ---------- FBref Style Snapshot (Team) ---------- */}
+      {fbref && (
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-zinc-200 p-3 shadow-sm dark:border-zinc-800">
+            <GraphHeader
+              title="Style Snapshot"
+              help="FBref team rates: Shot/Goal-Creating Actions per 90, progression via passes+carries, touches in the box, cross frequency, dribble volume/success, passing mix, and defensive actions."
+            />
+            <div className="grid grid-cols-1 gap-3">
+              <HBar label="Shot-Creating Actions /90" value={fbref.sca90} max={40} />
+              <HBar label="Goal-Creating Actions /90" value={fbref.gca90} max={6} />
+              <HBar label="Progressions /90 (passes+carries)" value={fbref.progPPer90 + fbref.progCPer90} max={60} />
+              <HBar label="Box touches /90" value={fbref.boxTouchesPer90} max={30} />
+              <HBar label="Crosses /100 passes" value={fbref.crossPer100} max={10} />
+              <HBar label="Take-ons /90" value={fbref.takeOnsPer90} max={15} />
+              <div className="grid grid-cols-3 gap-2">
+                <GaugeRing label="Dribble success" value={fbref.takeOnSuccPct} color="#0ea5e9" />
+                <GaugeRing label="Duel win%" value={fbref.duelWinPct} color="#22c55e" />
+                <GaugeRing label="Save %" value={fbref.savePct} color="#f59e0b" />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <HBar label="Short pass share" value={fbref.shortShare} max={100} suffix="%" />
+                <HBar label="Long pass share"  value={fbref.longShare}  max={100} suffix="%" />
+                <HBar label="Dead-ball share"  value={fbref.deadShare}  max={100} suffix="%" />
+              </div>
+            </div>
+          </div>
+
+          {/* ---------- FBref Defensive Snapshot (vs_team) ---------- */}
+          {fbrefVs && (
+            <div className="rounded-2xl border border-zinc-200 p-3 shadow-sm dark:border-zinc-800">
+              <GraphHeader
+                title="Defensive Snapshot (vs Team)"
+                help="Opponents’ outputs vs this team: SCA/GCA conceded per 90, opponent progressions and box entries, crosses allowed, GA/90, duel win rate, and Tkl+Int per 90."
+              />
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                <GaugeRing label="Save % (faced)" value={fbrefVs.savePctOpp} color="#f59e0b" />
+                <GaugeRing label="Duel win%" value={fbrefVs.duelWinPct} color="#22c55e" />
+                <GaugeRing label="Tkl+Int (index)" value={Math.min(100, (fbrefVs.tklIntPer90/25)*100)} suffix="" color="#8b5cf6" />
+              </div>
+              <DuoBoard
+                rows={[
+                  { label: "Progressions /90", team: (fbref?.progPPer90 || 0) + (fbref?.progCPer90 || 0), opp: (fbrefVs.oppProgPPer90 || 0) + (fbrefVs.oppProgCPer90 || 0), unit: "", max: 60 },
+                  { label: "Box touches /90", team: fbref?.boxTouchesPer90 || 0, opp: fbrefVs.oppBoxTouchesPer90 || 0, unit: "", max: 30 },
+                  { label: "Crosses /100 passes", team: fbref?.crossPer100 || 0, opp: fbrefVs.oppCrossPer100 || 0, unit: "", max: 12 },
+                  { label: "SCA /90", team: fbref?.sca90 || 0, opp: fbrefVs.oppSCA90 || 0, unit: "", max: 40 },
+                  { label: "GCA /90", team: fbref?.gca90 || 0, opp: fbrefVs.oppGCA90 || 0, unit: "", max: 6 },
+                  { label: "GA /90 (lower better)", team: 0, opp: fbrefVs.ga90 || 0, unit: "", max: 3 },
+                ]}
+              />
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Formations summary */}
       <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Formations Used</h3>
-        </div>
+        <GraphHeader
+          title="Formations Used"
+          help="Minutes, shots, goals and xG produced from each formation. Use the bar to compare usage time."
+        />
         <div className="grid grid-cols-1 gap-3">
           {formations.map((f) => (
             <div key={f.formation} className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800">
@@ -805,9 +1065,10 @@ function DashboardView({
       {/* Created (donut) & Radar */}
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-semibold">xG Share by Situation (Created)</h3>
-          </div>
+          <GraphHeader
+            title="xG Share by Situation (Created)"
+            help="Distribution of expected goals by situation type (Open Play, Set Pieces, Corners, etc.). Helps identify source mix of chance creation."
+          />
           {pieData.length === 0 ? (
             <div className="text-sm text-zinc-500">No data.</div>
           ) : (
@@ -826,9 +1087,10 @@ function DashboardView({
         </div>
 
         <div className="rounded-2xl border border-zinc-200 p-3 dark:border-zinc-800">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Situational xG — Created vs Conceded (Radar)</h3>
-          </div>
+          <GraphHeader
+            title="Situational xG — Created vs Conceded (Radar)"
+            help="Normalized (0–100) to the max xG across created and conceded. Larger green spoke means more xG created from that situation; red shows conceded."
+          />
           {radarData.length === 0 ? (
             <div className="text-sm text-zinc-500">No data.</div>
           ) : (
@@ -859,9 +1121,10 @@ function DashboardView({
 
       {/* Attack vs Defence Overlay */}
       <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Attack vs Defence — Created vs Conceded (by Situation)</h3>
-        </div>
+        <GraphHeader
+          title="Attack vs Defence — Created vs Conceded (by Situation)"
+          help="Bars: shots (upwards=for, downwards=against). Lines: xG (upwards=for, downwards=against). Compare where the team generates vs concedes threat."
+        />
         {overlay.data.length === 0 ? (
           <div className="text-sm text-zinc-500">No data.</div>
         ) : (
@@ -906,16 +1169,14 @@ function DashboardView({
       {/* Team Shot Heatmap */}
       <section>
         <div className="mb-2 flex items-center gap-3">
-          <h3 className="text-sm font-semibold">Shot Heatmap (Attacking Half)</h3>
-          <label className="ml-auto inline-flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
-            <input
-              type="checkbox"
-              className="accent-sky-600"
-              checked={showShotDots}
-              onChange={(e) => setShowShotDots(e.target.checked)}
-            />
-            Show shots
-          </label>
+          <GraphHeader
+            title="Shot Heatmap (Attacking Half)"
+            help="Grid heatmap weighted by cumulative xG per cell, mirrored so the team always attacks to the right. Toggle dots to see individual shots."
+          />
+          <div className="ml-auto inline-flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+            <span>Show shots</span>
+            <ToggleSwitch checked={showShotDots} onChange={setShowShotDots} label="Toggle shot dots" />
+          </div>
         </div>
         {errorShots ? (
           <div className="text-sm text-rose-600">Failed to load shots.</div>
@@ -933,7 +1194,10 @@ function DashboardView({
 
       {/* Upcoming fixtures snapshot */}
       <section>
-        <div className="mb-2 text-sm font-semibold">Next Fixtures</div>
+        <GraphHeader
+          title="Next Fixtures"
+          help="The next three scheduled fixtures with date, time, and venue. Click a recent match above for deep stats."
+        />
         <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
           {next3.map((f) => <MiniFixture key={f.id} f={f} />)}
         </div>
@@ -1044,7 +1308,7 @@ function FixturesView({ loading, error, fixtures }) {
               <td className="px-3 py-2 font-medium">{m.home}</td>
               <td className="px-3 py-2">{m.away}</td>
               <td className="px-2 py-2 text-center">{m.date}</td>
-              <td className="px-2 py-2 text-center tabular-nums">{m.time}</td>
+              <td className="px-2 py-2 text-center">{m.time}</td>
               <td className="px-3 py-2">{m.venue}</td>
             </tr>
           ))}

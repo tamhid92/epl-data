@@ -14,6 +14,13 @@ spec:
         app: etl-jobs
     spec:
       restartPolicy: Never
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
       initContainers:
         - name: wait-for-postgres
           image: postgres:17-alpine
@@ -32,10 +39,61 @@ spec:
               done
               echo "Postgres is ready."
       containers:
+        # --- Selenium sidecar ---
+        - name: selenium
+          image: selenium/standalone-chromium:latest
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 4444
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1200   # selenium image runs as seluser (UID 1200)
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+
+        # --- Your ETL container ---
         - name: etl
-          image: ghcr.io/tamhid92/epl-etl:latest
+          image: ghcr.io/tamhid92/epl-etl:staging
           imagePullPolicy: Always
-          args: ["init"]
+          # Wait for Selenium, then run python with "init"
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              echo "Waiting for Selenium at http://localhost:4444/status ..."
+                  python - <<'PY'
+              import json, sys, time, urllib.request
+              url = "http://localhost:4444/status"
+              for _ in range(120):
+                  try:
+                      with urllib.request.urlopen(url, timeout=2) as r:
+                          data = json.load(r)
+                      ready = (data.get("value") or {}).get("ready")
+                      if ready is None:
+                          ready = data.get("ready")
+                      if ready:
+                          sys.exit(0)
+                  except Exception:
+                      pass
+                  time.sleep(2)
+              sys.exit(1)
+              PY
+                  exec python /app/data_pipeline.py update
           env:
             - name: DB_HOST
               value: "postgres"
@@ -65,6 +123,10 @@ spec:
               value: "5"
             - name: VENUES_CSV_PATH
               value: "/app/venues.csv"
+            - name: SELENIUM_URL
+              value: "http://localhost:4444"
+            - name: FBREF_WAIT_TIME
+              value: "7"
           resources:
             requests:
               cpu: "200m"
@@ -80,10 +142,6 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-      volumes:
-        - name: tmp
-          emptyDir: {}
-
 ---
 # -------------------- WEEKLY UPDATE CRONJOB --------------------
 apiVersion: batch/v1
@@ -107,6 +165,13 @@ spec:
             app: etl-jobs
         spec:
           restartPolicy: OnFailure
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 2Gi
           initContainers:
             - name: wait-for-postgres
               image: postgres:17-alpine
@@ -125,10 +190,47 @@ spec:
                   done
                   echo "Postgres is ready."
           containers:
-            - name: etl
-              image: ghcr.io/tamhid92/epl-etl:latest
+            # --- Selenium sidecar ---
+            - name: selenium
+              image: selenium/standalone-chromium:latest
               imagePullPolicy: IfNotPresent
-              args: ["update"]
+              resources:
+                requests:
+                  cpu: "300m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+              readinessProbe:
+                httpGet:
+                  path: /status
+                  port: 4444
+                initialDelaySeconds: 2
+                periodSeconds: 3
+                timeoutSeconds: 2
+                failureThreshold: 20
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                runAsNonRoot: true
+                runAsUser: 1200
+              volumeMounts:
+                - name: dshm
+                  mountPath: /dev/shm
+
+            # --- Your ETL container ---
+            - name: etl
+              image: ghcr.io/tamhid92/epl-etl:staging
+              imagePullPolicy: IfNotPresent
+              # Wait for Selenium, then run python with "update"
+              command: ["/bin/sh","-lc"]
+              args:
+                - |
+                  echo "Waiting for Selenium at http://localhost:4444/status ..."
+                  until curl -sf http://localhost:4444/status | grep -q '"ready":true'; do
+                    sleep 2
+                  done
+                  exec python /app/data_pipeline.py update
               env:
                 - name: DB_HOST
                   value: "postgres"
@@ -161,6 +263,10 @@ spec:
                   value: "5"
                 - name: VENUES_CSV_PATH
                   value: "/app/venues.csv"
+                - name: SELENIUM_URL
+                  value: "http://localhost:4444"
+                - name: FBREF_WAIT_TIME
+                  value: "7"
               resources:
                 requests:
                   cpu: "200m"
@@ -176,6 +282,3 @@ spec:
               volumeMounts:
                 - name: tmp
                   mountPath: /tmp
-          volumes:
-            - name: tmp
-              emptyDir: {}

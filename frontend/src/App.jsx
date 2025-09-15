@@ -2,13 +2,12 @@ import React, { useEffect, useMemo, useState } from "react";
 import Navbar from "./components/Navbar";
 import StandingsTable from "./components/StandingsTable";
 import TeamModal from "./components/TeamModal";
-import RollingFixtures from "./components/RollingFixtures";
 import FixturesListModal from "./components/FixturesListModal";
 import PlayersModal from "./components/PlayersModal";
-import RecentResults from "./components/RecentResults";
 import ResultsListModal from "./components/ResultsListModal";
 import MatchCenter from "./components/MatchCenter";
 import ContactModal from "./components/ContactModal";
+import ResultsFixturesDeck from "./components/ResultsFixturesDeck";
 
 /* Recharts */
 import {
@@ -18,6 +17,8 @@ import {
   CartesianGrid, Tooltip, Cell, LabelList,
   ReferenceLine,
   LineChart, Line,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Legend,
+  RadialBarChart, RadialBar,
 } from "recharts";
 
 const OWNER_NAME = "Tamhid Chowdhury";
@@ -94,6 +95,33 @@ function rgba(hex, a) {
 function getTeamPrimary(team) {
   return TEAM_COLORS[team] || DEFAULT_PRIMARY;
 }
+function hexLuminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const srgb = [r, g, b].map(v => {
+    const x = v / 255;
+    return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
+}
+function mixHex(a, b = "#ffffff", t = 0.5) {
+  const A = hexToRgb(a), B = hexToRgb(b);
+  const r = Math.round(A.r + (B.r - A.r) * t);
+  const g = Math.round(A.g + (B.g - A.g) * t);
+  const bch = Math.round(A.b + (B.b - A.b) * t);
+  return `#${[r, g, bch].map(v => v.toString(16).padStart(2, "0")).join("")}`;
+}
+/** Ensures team color stays visible in dark mode. */
+function getAccessibleVisColors(baseHex, isDark) {
+  let stroke = baseHex;
+  if (isDark && hexLuminance(stroke) < 0.24) {
+    // Lighten dark colors against dark UI
+    stroke = mixHex(stroke, "#ffffff", 0.45);
+  }
+  // Slightly translucent fill that still pops in both themes
+  const fill = rgba(stroke, 0.28);
+  const ring  = rgba(stroke, 0.35);
+  return { stroke, fill, ring };
+}
 function pearson(xs, ys) {
   const n = Math.min(xs.length, ys.length);
   if (n < 3) return 0;
@@ -121,7 +149,14 @@ function linreg(xy) {
   const b = (sy - m * sx) / n;
   return { m, b };
 }
-
+function Spinner({ className = "" }) {
+  return (
+    <span
+      className={`inline-block h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-indigo-500 align-[-2px] ${className}`}
+      aria-label="Loading"
+    />
+  );
+}
 /* Tiny hover helper + tag chips */
 function HelpHint({ text, className = "" }) {
   return (
@@ -209,73 +244,16 @@ function SiteFooter({ ownerName }) {
             Data scraped from{" "}
             <a href="https://understat.com" target="_blank" rel="noreferrer" className="underline decoration-dotted hover:decoration-solid">
               Understat
+            </a> and
+            {" "}
+            <a href="https://fbref.com" target="_blank" rel="noreferrer" className="underline decoration-dotted hover:decoration-solid">
+              FbRef
             </a>.
           </div>
           <div>For educational and research purposes only.</div>
         </div>
       </div>
     </footer>
-  );
-}
-
-/* Mini quadrant scatter */
-function ZoneQuadrant({ title, data, fx, fy, good, selectedTeam }) {
-  const d = data.map((r) => ({
-    team: r.team,
-    x: r[fx],
-    y: r[fy],
-    r: selectedTeam ? (r.team === selectedTeam ? 6 : 3) : 4,
-    dim: selectedTeam ? (r.team === selectedTeam ? 1 : 0.35) : 0.9,
-    hl: selectedTeam && r.team === selectedTeam,
-  }));
-  const selColor = selectedTeam ? getTeamPrimary(selectedTeam) : DEFAULT_PRIMARY;
-
-  return (
-    <div className="rounded-xl border border-zinc-200 p-2 dark:border-zinc-800">
-      <div className="mb-1 flex items-center justify-between">
-        <div className="text-xs font-semibold">{title}</div>
-        <div className="text-[10px] text-zinc-500">{good} is good</div>
-      </div>
-      <div className="h-64">
-        <ResponsiveContainer>
-          <ScatterChart margin={{ top: 6, right: 6, left: 6, bottom: 6 }}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              type="number"
-              domain={[0, 100]}
-              dataKey="x"
-              tick={{ fontSize: 10 }}
-              tickFormatter={(v) => `${Math.round(v)}%`}
-              label={{ value: "For% of xG", position: "insideBottom", offset: -2, fontSize: 10 }}
-            />
-            <YAxis
-              type="number"
-              domain={[0, 100]}
-              dataKey="y"
-              tick={{ fontSize: 10 }}
-              tickFormatter={(v) => `${Math.round(v)}%`}
-              allowDecimals={false}
-              label={{ value: "Against% of xG", angle: -90, position: "insideLeft", fontSize: 10 }}
-            />
-            <ReferenceLine ifOverflow="extendDomain" segment={[{ x: 0, y: 0 }, { x: 100, y: 100 }]} stroke="#A1A1AA" strokeDasharray="4 3" />
-            <Tooltip content={<ScatterTip xLabel="For%" yLabel="Against%" fmtX={(v) => `${Math.round(v)}%`} fmtY={(v) => `${Math.round(v)}%`} />} />
-            <Scatter name="Teams" data={d} fill="#14B8A6">
-              {d.map((p, i) => (
-                <Cell
-                  key={i}
-                  r={p.r}
-                  fillOpacity={p.dim}
-                  fill={p.hl ? selColor : "#94A3B8"}
-                  stroke={p.hl ? rgba(selColor, 1) : "none"}
-                  strokeWidth={p.hl ? 1.2 : 0}
-                />
-              ))}
-              <LabelList dataKey="team" position="top" style={{ fontSize: 9 }} />
-            </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
   );
 }
 
@@ -328,30 +306,261 @@ function KPI({ label, value, sub, avg, color = DEFAULT_PRIMARY }) {
     </div>
   );
 }
+function KpiGauge({
+  label,
+  value,
+  avg,
+  min = 0,
+  max = 1,
+  better = "higher",
+  fmt = (v) => v,
+  color = DEFAULT_PRIMARY,
+  size = "sm",
+}) {
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+  const span = Math.max(1e-9, max - min);
+  const toPct = (x) => clamp(((Number(x) - min) / span) * 100, 0, 100);
 
-function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPlayer }) {
+  const vPct = toPct(value);
+  const aPct = toPct(avg);
+
+  const dense = size === "sm";
+  const cardPad  = dense ? "p-2"  : "p-3";
+  const chartH   = dense ? "h-28" : "h-40";
+  const labelCls = dense ? "text-[10px]" : "text-[11px]";
+  const valueCls = dense ? "text-base"   : "text-lg";
+  const avgCls   = dense ? "text-[10px]" : "text-[11px]";
+  const chipCls  = dense ? "text-[9px] px-1.5 py-0.5" : "text-[10px] px-2 py-0.5";
+
+  // SUPER-THIN rings (≈1–1.6% thickness)
+  const AVG_IN  = dense ? "99.1%" : "99.0%";
+  const AVG_OUT = dense ? "99.6%" : "99.5%";
+  const VAL_IN  = dense ? "86.2%" : "86.0%";
+  const VAL_OUT = dense ? "86.7%" : "86.5%";
+
+  const startAngle = 210, endAngle = -30;
+
+  const data = [{ track: 100, avg: aPct, val: vPct }];
+  const centerYOffset = dense ? "10%" : "8%";
+
+  const deltaRaw = (Number(avg) > 0)
+    ? (better === "higher" ? (value - avg) / avg : (avg - value) / avg)
+    : 0;
+  const deltaPct = clamp(deltaRaw * 100, -999, 999);
+
+  return (
+    <div className={`rounded-xl border border-zinc-200 bg-white ${cardPad} shadow-sm dark:border-zinc-800 dark:bg-zinc-950`}>
+      <div className={`mb-0.5 font-medium text-zinc-600 dark:text-zinc-400 ${labelCls}`}>{label}</div>
+      <div className={`relative ${chartH}`}>
+        <ResponsiveContainer>
+          <RadialBarChart data={data} startAngle={startAngle} endAngle={endAngle}>
+            {/* hairline track (very light) */}
+            <RadialBar
+              dataKey="track"
+              clockWise
+              fill="rgba(148,163,184,0.15)"     // slate-400/15
+              innerRadius={AVG_IN}
+              outerRadius={AVG_OUT}
+              cornerRadius={0}
+              isAnimationActive={false}
+            />
+            {/* league avg line (outer) */}
+            <RadialBar
+              dataKey="avg"
+              clockWise
+              fill="rgba(100,116,139,0.55)"     // slate-500/55
+              innerRadius={AVG_IN}
+              outerRadius={AVG_OUT}
+              cornerRadius={0}
+            />
+            {/* team value line (inner) */}
+            <RadialBar
+              dataKey="val"
+              clockWise
+              fill={color}
+              innerRadius={VAL_IN}
+              outerRadius={VAL_OUT}
+              cornerRadius={0}
+            />
+          </RadialBarChart>
+        </ResponsiveContainer>
+
+        {/* center labels */}
+        <div className="pointer-events-none absolute inset-0 grid place-items-center"
+            style={{ transform: `translateY(${centerYOffset})` }}>
+          <div className="text-center">
+            <div className={`${valueCls} font-semibold tabular-nums`}>{fmt(value)}</div>
+            <div className={`${avgCls} text-zinc-500`}>Avg {fmt(avg)}</div>
+            <div
+              className={[
+                `mx-auto mt-0.5 w-fit rounded-full ${chipCls} font-semibold`,
+                deltaPct > 2 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" :
+                deltaPct < -2 ? "bg-rose-500/15 text-rose-700 dark:text-rose-300" :
+                                "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300"
+              ].join(" ")}
+            >
+              {deltaPct >= 0 ? "▲" : "▼"} {Math.abs(deltaPct).toFixed(0)}%
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPlayer, isDark = false }) {
   const [createdMap, setCreatedMap] = useState({});
   const [zonesMap, setZonesMap] = useState({});
   const [zonesConMap, setZonesConMap] = useState({});
   const [timingMap, setTimingMap] = useState({});
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [errDetails, setErrDetails] = useState(null);
+  const [fbrefMap, setFbrefMap] = useState({});
+  const [fbrefVsMap, setFbrefVsMap] = useState({});
+  // FBref league maps
+  const [fbrefAll, setFbrefAll] = useState(null);
+  const [fbrefVs,  setFbrefVs]  = useState(null);
+  const [fbrefLoading, setFbrefLoading] = useState(false);
+  const [fbrefErr, setFbrefErr] = useState(null);
 
   // Leaders
   const [leaders, setLeaders] = useState({ goals: [], assists: [], xg: [], xa: [] });
   const [loadingLeaders, setLoadingLeaders] = useState(false);
   const [errLeaders, setErrLeaders] = useState(null);
 
-  // Weekly table (for bumpy chart)
-  const [weeklyData, setWeeklyData] = useState(null);
-  const [loadingWeekly, setLoadingWeekly] = useState(false);
-  const [errWeekly, setErrWeekly] = useState(null);
-  const [hoverTeam, setHoverTeam] = useState(null);
 
   const [selectedTeam, setSelectedTeam] = useState(""); // "" = All
   const themeColor = useMemo(() => getTeamPrimary(selectedTeam), [selectedTeam]);
+  const vis = useMemo(() => getAccessibleVisColors(themeColor, isDark), [themeColor, isDark]);
 
-  // Load per-team details
+  // Build fbrefMap from fbrefAll (league blob) — no per-team network calls
+  useEffect(() => {
+    if (!fbrefAll) { setFbrefMap({}); return; }
+
+    const out = {};
+    for (const [t, obj] of Object.entries(fbrefAll)) {
+      const std  = obj?.standard || {};
+      const gsc  = obj?.goal_and_shot_creation || {};
+      const pass = obj?.passing || {};
+      const ptyp = obj?.pass_types || {};
+      const poss = obj?.possession || {};
+      const def  = obj?.defensive || {};
+      const gk   = obj?.goalkeeping || {};
+
+      const n90 = Number(std.playing_time_90s || gk.playing_time_90s || 0) || 0;
+      const totalPass =
+        Number(pass.total_att || 0) ||
+        (Number(pass.short_att || 0) + Number(pass.medium_att || 0) + Number(pass.long_att || 0));
+
+      const divLocal = (n, d) => (d > 0 ? Number(n) / d : 0);
+      const pctLocal = (n, d) => (d > 0 ? (Number(n) / d) * 100 : 0);
+
+      out[t] = {
+        n90,
+        sca90: Number(gsc.sca_sca90 || 0),
+        gca90: Number(gsc.gca_gca90 || 0),
+        shortShare: pctLocal(pass.short_att || 0, totalPass),
+        longShare:  pctLocal(pass.long_att  || 0, totalPass),
+        crossPer100: totalPass ? (Number(ptyp.pass_types_crs || 0) / totalPass) * 100 : 0,
+        deadShare:   pctLocal(ptyp.pass_types_dead || 0, totalPass),
+
+        takeOnSuccPct: Number(poss.take_ons_succpct || 0),
+        takeOnsPer90:   divLocal(poss.take_ons_att || 0, n90),
+
+        progPPer90:     divLocal(pass.prgp || 0, n90),
+        progCPer90:     divLocal(poss.carries_prgc || 0, n90),
+        boxTouchesPer90: divLocal(poss.touches_att_pen || 0, n90),
+        prgrPer90:       divLocal(poss.receiving_prgr || 0, n90),
+
+        tklIntPer90:     divLocal(def.tklplusint || 0, n90),
+        intPer90:        divLocal(def.int || 0, n90),
+        blocksPer90:     divLocal(def.blocks_blocks || 0, n90),
+        tklWinPct:       Number(def.challenges_tklpct || 0),
+
+        savePct:         Number(gk.performance_savepct || 0),
+      };
+    }
+    setFbrefMap(out);
+  }, [fbrefAll]);
+
+  // Build fbrefVsMap from fbrefVs (league blob) — no per-team network calls
+  useEffect(() => {
+    if (!fbrefVs) { setFbrefVsMap({}); return; }
+
+    const out = {};
+    for (const [t, obj] of Object.entries(fbrefVs)) {
+      const vstd  = obj?.standard || {};
+      const vgsc  = obj?.goal_and_shot_creation || {};
+      const vpass = obj?.passing || {};
+      const vptype= obj?.pass_types || {};
+      const vposs = obj?.possession || {};
+      const vdef  = obj?.defensive || {};
+      const vgk   = obj?.goalkeeping || {};
+
+      const n90v = Number(vstd.playing_time_90s || vgk.playing_time_90s || 0) || 0;
+      const totalPassOpp =
+        Number(vpass.total_att || 0) ||
+        (Number(vpass.short_att || 0) + Number(vpass.medium_att || 0) + Number(vpass.long_att || 0));
+
+      const divLocal = (n, d) => (d > 0 ? Number(n) / d : 0);
+
+      out[t] = {
+        n90: n90v,
+
+        // Opponents’ creation vs this team
+        oppSCA90: Number(vgsc.sca_sca90 || (vgsc.sca_sca && n90v ? vgsc.sca_sca / n90v : 0) || 0),
+        oppGCA90: Number(vgsc.gca_gca90 || (vgsc.gca_gca && n90v ? vgsc.gca_gca / n90v : 0) || 0),
+
+        // Conceding profile
+        ga90: Number(vgk.performance_ga90 || (vgk.performance_ga && n90v ? vgk.performance_ga / n90v : 0) || 0),
+        savePctOpp: Number(vgk.performance_savepct || 0),
+
+        // Progression allowed
+        oppProgPPer90: divLocal(vpass.prgp || 0, n90v),
+        oppProgCPer90: divLocal(vposs.carries_prgc || 0, n90v),
+
+        // Dangerous zone access
+        oppBoxTouchesPer90: divLocal(vposs.touches_att_pen || 0, n90v),
+
+        // Crossing volume allowed
+        oppCrossPer100: totalPassOpp ? (Number(vptype.pass_types_crs || 0) / totalPassOpp) * 100 : 0,
+
+        // Duels & defensive activity
+        duelWinPct: Number(vdef.challenges_tklpct || 0),
+        tklIntPer90: divLocal(vdef.tklplusint || 0, n90v),
+        blocksPer90: divLocal(vdef.blocks_blocks || 0, n90v),
+      };
+    }
+    setFbrefVsMap(out);
+  }, [fbrefVs]);
+
+
+  useEffect(() => {
+    if (!apiBase) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setFbrefLoading(true); setFbrefErr(null);
+        const [all, vs] = await Promise.all([
+          fetchJson(`${apiBase}/fbref/all_teams`),
+          fetchJson(`${apiBase}/fbref/vs_all_teams`),
+        ]);
+        if (cancelled) return;
+        const unwrap = (arr, key) => (Array.isArray(arr) && arr[0] && arr[0][key]) || {};
+        setFbrefAll(unwrap(all, "get_fbref_team_json_all"));
+        setFbrefVs( unwrap(vs,  "get_fbref_vs_team_json_all"));
+      } catch (e) {
+        if (!cancelled) setFbrefErr(String(e));
+      } finally {
+        if (!cancelled) setFbrefLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [apiBase]);
+
+
+  // Load per-team details (Understat only: created/zones/timing)
   useEffect(() => {
     const ts = (standings?.length ? standings.map((r) => r.Team) : teams) || [];
     if (!apiBase || !ts.length) return;
@@ -361,9 +570,11 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
       try {
         setLoadingDetails(true);
         setErrDetails(null);
+
         const MAX_CONC = 5;
         const queue = [...ts];
         const _c = {}, _z = {}, _za = {}, _t = {};
+
         async function loadTeam(t) {
           try {
             const [created, zones, zonesCon, timing] = await Promise.all([
@@ -376,14 +587,23 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
             _z[t] = Array.isArray(zones) ? zones : [];
             _za[t] = Array.isArray(zonesCon) ? zonesCon : [];
             _t[t] = Array.isArray(timing) ? timing : [];
-          } catch {/* ignore single-team failure */}
+          } catch {
+            /* ignore single-team failure */
+          }
         }
-        const workers = Array.from({ length: Math.min(MAX_CONC, queue.length) }, async () => {
-          while (queue.length && !cancelled) await loadTeam(queue.shift());
-        });
+
+        const workers = Array.from(
+          { length: Math.min(MAX_CONC, queue.length) },
+          async () => { while (queue.length && !cancelled) await loadTeam(queue.shift()); }
+        );
+
         await Promise.all(workers);
         if (cancelled) return;
-        setCreatedMap(_c); setZonesMap(_z); setZonesConMap(_za); setTimingMap(_t);
+
+        setCreatedMap(_c);
+        setZonesMap(_z);
+        setZonesConMap(_za);
+        setTimingMap(_t);
       } catch (e) {
         if (!cancelled) setErrDetails(String(e));
       } finally {
@@ -437,27 +657,6 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
     })();
 
     return () => { ignore = true; };
-  }, [apiBase]);
-
-  // Load weekly table for bumpy chart
-  useEffect(() => {
-    if (!apiBase) return;
-    let stop = false;
-    (async () => {
-      try {
-        setLoadingWeekly(true);
-        setErrWeekly(null);
-        const json = await fetchJson(`${apiBase}/weekly_table`);
-        if (stop) return;
-        const data = json?.data || json;
-        setWeeklyData(data);
-      } catch (e) {
-        if (!stop) setErrWeekly(String(e));
-      } finally {
-        if (!stop) setLoadingWeekly(false);
-      }
-    })();
-    return () => { stop = true; };
   }, [apiBase]);
 
   const teamRows = useMemo(() => {
@@ -574,6 +773,45 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
     [selectedTeam, teamRows]
   );
 
+  const fbrefAvg = useMemo(() => {
+    const vals = Object.values(fbrefMap);
+    const n = vals.length || 0;
+    if (!n) return null;
+    const sum = (k) => vals.reduce((a,v)=> a + (Number(v?.[k]) || 0), 0) / n;
+    return {
+      sca90: sum('sca90'),
+      gca90: sum('gca90'),
+      crossPer100: sum('crossPer100'),
+      takeOnSuccPct: sum('takeOnSuccPct'),
+      progTotalPer90: sum('progPPer90') + sum('progCPer90'),
+      boxTouchesPer90: sum('boxTouchesPer90'),
+    };
+  }, [fbrefMap]);
+
+  const fbrefVsAvg = useMemo(() => {
+    const vals = Object.values(fbrefVsMap);
+    const n = vals.length || 0;
+    if (!n) return null;
+    const avg = (k) => vals.reduce((a, v) => a + (Number(v?.[k]) || 0), 0) / n;
+    return {
+      ga90: avg("ga90"),
+      oppSCA90: avg("oppSCA90"),
+      oppProgTotalPer90: avg("oppProgPPer90") + avg("oppProgCPer90"),
+      oppBoxTouchesPer90: avg("oppBoxTouchesPer90"),
+    };
+  }, [fbrefVsMap]);
+
+  const selectedFb = useMemo(() => {
+    if (!selectedTeam) return null;
+    return fbrefMap[selectedTeam] || null;
+  }, [selectedTeam, fbrefMap]);
+
+  const selectedFbVs = useMemo(() => {
+    if (!selectedTeam) return null;
+    return fbrefVsMap[selectedTeam] || null;
+  }, [selectedTeam, fbrefVsMap]);
+
+
   const insightTags = useMemo(() => {
     if (!selectedRow) return null;
     const r = selectedRow;
@@ -600,8 +838,94 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
 
     if (r.NPxGD / Math.max(1, r.M) >= 0.5) tags.push(<StatusTag key="dom" intent="good">Territorial dominance</StatusTag>);
 
+    // --- NEW: dial up negatives using existing Understat-derived fields ---
+    if (boxShare < 45) {
+      tags.push(<StatusTag key="perimeter" intent="warn">Perimeter shooters</StatusTag>);
+    }
+
+    if (r.PPDA >= 14) {
+      tags.push(<StatusTag key="passive-press" intent="bad">Passive out of possession</StatusTag>);
+    }
+
+    if (r.OPPDA >= 14) {
+      tags.push(<StatusTag key="opp-comfy" intent="bad">Opponents build comfortably</StatusTag>);
+    }
+    if (r.xG_early > 0 && r.xG_late <= 0.6 * r.xG_early) {
+      tags.push(<StatusTag key="fade-late" intent="warn">Fades late in games</StatusTag>);
+    }
+
+    const fb = (typeof selectedFb !== "undefined" && selectedFb) ? selectedFb : null;
+
+    if (fb) {
+      if (fb.crossPer100 >= 5) {
+        tags.push(<StatusTag key="cross-hope" intent="warn">Cross-and-hope</StatusTag>);
+      }
+      if ((fb.progPPer90 + fb.progCPer90) < 30) {
+        tags.push(<StatusTag key="no-prog" intent="bad">Struggles to progress</StatusTag>);
+      }
+      if (fb.boxTouchesPer90 < 15) {
+        tags.push(<StatusTag key="rare-box" intent="bad">Rarely in the box</StatusTag>);
+      }
+      if (fb.takeOnSuccPct < 40 && fb.takeOnsPer90 >= 8) {
+        tags.push(<StatusTag key="ineff-dribble" intent="bad">Inefficient dribbling</StatusTag>);
+      }
+      if (fb.tklIntPer90 < 12) {
+        tags.push(<StatusTag key="passive-def" intent="bad">Passive defending</StatusTag>);
+      }
+      if (fb.savePct && fb.savePct < 64) {
+        tags.push(<StatusTag key="gk-issue" intent="warn">Shaky GK form</StatusTag>);
+      }
+    }
+
+    const v = (typeof selectedFbVs !== "undefined" && selectedFbVs) ? selectedFbVs : null;
+
+    if (v) {
+      const oppProgTotal = (v.oppProgPPer90 || 0) + (v.oppProgCPer90 || 0);
+
+      // Conceding profile
+      if (v.ga90 >= 1.6) {
+        tags.push(<StatusTag key="vs-ga" intent="bad">Leaky: GA/90 is high</StatusTag>);
+      }
+      if (v.savePctOpp > 0 && v.savePctOpp < 55) {
+        tags.push(<StatusTag key="vs-gk-bad" intent="bad">Shot-stopping issues</StatusTag>);
+      } else if (v.savePctOpp > 0 && v.savePctOpp < 62) {
+        tags.push(<StatusTag key="vs-gk-warn" intent="warn">Below-par save %</StatusTag>);
+      }
+
+      // Chance creation allowed
+      if (v.oppSCA90 >= 24) {
+        tags.push(<StatusTag key="vs-sca" intent="warn">Allows high shot creation</StatusTag>);
+      }
+      if (v.oppGCA90 >= 1.5) {
+        tags.push(<StatusTag key="vs-gca" intent="bad">Concedes big chances</StatusTag>);
+      }
+
+      // Field progression allowed
+      if (oppProgTotal >= 45) {
+        tags.push(<StatusTag key="vs-prog" intent="bad">Opponents progress too easily</StatusTag>);
+      }
+
+      // Dangerous zone access
+      if (v.oppBoxTouchesPer90 >= 20) {
+        tags.push(<StatusTag key="vs-box" intent="bad">Opponents reach box often</StatusTag>);
+      }
+
+      // Crossing volume allowed
+      if (v.oppCrossPer100 >= 5) {
+        tags.push(<StatusTag key="vs-cross" intent="warn">Crosses allowed frequently</StatusTag>);
+      }
+
+      // Defensive intensity/duels
+      if (v.duelWinPct > 0 && v.duelWinPct < 50) {
+        tags.push(<StatusTag key="vs-duels" intent="bad">Low 1v1 success</StatusTag>);
+      }
+      if (v.tklIntPer90 > 0 && v.tklIntPer90 < 14) {
+        tags.push(<StatusTag key="vs-activity" intent="warn">Low defensive activity</StatusTag>);
+      }
+    }
+
     return tags;
-  }, [selectedRow]);
+  }, [selectedRow, selectedFb, selectedFbVs]);
 
   const selectedKpis = useMemo(() => {
     if (!selectedRow) return null;
@@ -631,6 +955,194 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
       ppda: sums.ppda / n,
     };
   }, [teamRows]);
+
+  // -------------------------------------------------------------------------------------
+
+  const kpiDomains = useMemo(() => {
+    const clampList = (arr) => arr.filter((x) => Number.isFinite(Number(x)));
+    const rows = teamRows || [];
+
+    const finishing = clampList(rows.map(r => (r.xG > 0 ? r.G / r.xG : 1)));
+    const boxShare  = clampList(rows.map(r => (r.six_for_pct + r.pen_for_pct)));
+    const ppdaList  = clampList(rows.map(r => r.PPDA));
+
+    const fbVals = Object.values(fbrefMap || {});
+    const sca90  = clampList(fbVals.map(v => v.sca90));
+    const gca90  = clampList(fbVals.map(v => v.gca90));
+    const prog   = clampList(fbVals.map(v => (Number(v.progPPer90) + Number(v.progCPer90))));
+    const boxT90 = clampList(fbVals.map(v => v.boxTouchesPer90));
+    const drbSucc= clampList(fbVals.map(v => v.takeOnSuccPct));
+
+    const span = (arr, dflt) => {
+      if (!arr.length) return dflt;
+      return [Math.min(...arr), Math.max(...arr)];
+    };
+
+    return {
+      finishing: span(finishing, [0.6, 1.6]),
+      boxShare:  span(boxShare,  [20, 80]),
+      ppda:      span(ppdaList,  [6, 18]),
+      sca90:     span(sca90,     [10, 35]),
+      gca90:     span(gca90,     [0.5, 2.5]),
+      prog:      span(prog,      [20, 60]),
+      boxT90:    span(boxT90,    [8, 30]),
+      drbSucc:   span(drbSucc,   [30, 70]),
+    };
+  }, [teamRows, fbrefMap]);
+
+  const fmtNum = (x) => (Number(x) || 0).toFixed(2);
+  const fmtPct = (x) => `${Math.round(Number(x) || 0)}%`;
+
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+  // Build a normalized 0–1 “style” vector for every team, preferring FBref, with fallbacks to your existing rows
+  const styleLeague = useMemo(() => {
+    const metrics = ["Pressing", "Possession", "Progression", "Creation", "Finishing"];
+    const rows = [];
+
+    const leagueTeams = (standings?.map(r => r.Team) || teams || []).filter(Boolean);
+
+    for (const t of leagueTeams) {
+      const T = fbrefAll?.[t] || {};
+      const V = fbrefVs?.[t]  || {};
+      const r = teamRows.find(x => x.Team === t) || {};
+
+      // ── Pressing: FBref defensive challenges per 90 (higher = more aggressive). Fallback: inverse PPDA.
+      const press90 = Number(T?.defensive?.challenges_att) / Math.max(1, Number(T?.standard?.playing_time_90s));
+      const pressing = Number.isFinite(press90) && press90 > 0 ? press90 : (r.PPDA > 0 ? (1 / r.PPDA) : 0);
+
+      // ── Possession: FBref % if present, else rough proxy from your model (use DC & NPxGD as weak fallback)
+      const possession = Number(T?.possession?.poss) || Math.max(0, (r.DC || 0) + Math.max(0, r.NPxGD || 0));
+
+      // ── Progression: progressive passes + progressive carries
+      const progPass = Number(T?.passing?.prgp) || 0;
+      const progCarr = Number(T?.possession?.carries_prgc) || 0;
+      const progression = progPass + progCarr || (r.NPxG || 0); // fallback
+
+      // ── Creation: GCA per 90 (goal-creating actions)
+      const gca90 = Number(T?.goal_and_shot_creation?.gca_gca90);
+      const creation = Number.isFinite(gca90) ? gca90 : ((r.xG_created_total || 0) / Math.max(1, r.M || 1));
+
+      // ── Finishing: Goals ÷ xG
+      const gls = Number(T?.standard?.performance_gls);
+      const xg  = Number(T?.shooting?.expected_xg);
+      const finishing = xg > 0 ? gls / xg : (r.xG > 0 ? r.G / r.xG : 1);
+
+      rows.push({ team: t, Pressing: pressing, Possession: possession, Progression: progression, Creation: creation, Finishing: finishing });
+    }
+
+    // Normalize each metric to 0–1 across the league
+    const mins = {}, maxs = {};
+    metrics.forEach(k => { mins[k] = Infinity; maxs[k] = -Infinity; });
+    rows.forEach(r => metrics.forEach(k => { mins[k] = Math.min(mins[k], r[k]); maxs[k] = Math.max(maxs[k], r[k]); }));
+
+    const norm = rows.map(r => {
+      const o = { team: r.team };
+      metrics.forEach(k => { const span = (maxs[k] - mins[k]) || 1; o[k] = clamp01((r[k] - mins[k]) / span); });
+      return o;
+    });
+
+    return { metrics, data: norm };
+  }, [fbrefAll, fbrefVs, teamRows, standings, teams]);
+
+  const styleRadarData = useMemo(() => {
+    if (!selectedTeam || !styleLeague?.data?.length) return [];
+    const row = styleLeague.data.find(d => d.team === selectedTeam);
+    if (!row) return [];
+    return styleLeague.metrics.map(m => ({ metric: m, value: row[m] }));
+  }, [styleLeague, selectedTeam]);
+
+  // ────────────────── Defensive Radar (vs_team) ──────────────────
+  // tiny safe getter
+  const pickN = (obj, path, d = 0) => {
+    try {
+      const v = path.split(".").reduce((o, k) => o?.[k], obj);
+      const n = Number(v);
+      return Number.isFinite(n) ? n : d;
+    } catch { return d; }
+  };
+
+  // Build raw per-team "against" volumes from fbrefVs (opposition stats vs team)
+  const defenseRaw = useMemo(() => {
+    if (!fbrefVs) return [];
+    const rows = [];
+    for (const team of Object.keys(fbrefVs)) {
+      const t = fbrefVs[team] || {};
+      const n90s =
+        pickN(t.standard, "playing_time_90s", 0) ||
+        pickN(t.goalkeeping, "playing_time_90s", 0) || 0;
+
+      const safePer90 = (v, n) => (n > 0 ? v / n : 0);
+
+      // xGA/90 (use expected_xg field from vs shooting)
+      const xga90 = safePer90(pickN(t.shooting, "expected_xg", 0), n90s);
+
+      // Shots conceded /90 — use provided sh_90 if available, else compute
+      const shots90 =
+        pickN(t.shooting, "standard_sh_90", 0) ||
+        safePer90(pickN(t.shooting, "standard_sh", 0), n90s);
+
+      // Opp touches in box conceded /90
+      const boxTouch90 = safePer90(pickN(t.possession, "touches_att_pen", 0), n90s);
+
+      // Passes into penalty area allowed /90
+      const ppa90 = safePer90(pickN(t.passing, "ppa", 0), n90s);
+
+      // Crosses allowed /90 (prefer per90 from rate we stored earlier, else compute per 90)
+      // In league blob we only have total crosses; scale by n90s to get per90
+      const crosses90 = safePer90(pickN(t.pass_types, "pass_types_crs", 0), n90s);
+
+      // Opp progression per90 (progressive pass dist + progressive carry dist per90)
+      const progPassDist90 = safePer90(pickN(t.passing, "total_prgdist", 0), n90s);
+      const progCarryDist90 = safePer90(pickN(t.possession, "carries_prgdist", 0), n90s);
+      const oppProgDist90 = progPassDist90 + progCarryDist90;
+
+      rows.push({ team, xga90, shots90, boxTouch90, ppa90, crosses90, oppProgDist90 });
+    }
+    return rows;
+  }, [fbrefVs]);
+
+  // Normalize to 0–1 and invert so 1 = better (lower conceded volumes → higher score)
+  const defenseLeague = useMemo(() => {
+    if (!defenseRaw.length) return null;
+    const metrics = [
+      { key: "xga90",         label: "xGA/90" },
+      { key: "shots90",       label: "Shots Conceded/90" },
+      { key: "boxTouch90",    label: "Opp Box Touches/90" },
+      { key: "ppa90",         label: "Passes into Box/90" },
+      { key: "crosses90",     label: "Crosses Allowed/90" },
+      { key: "oppProgDist90", label: "Opp Progression Dist/90" },
+    ];
+
+    const mins = {}, maxs = {};
+    metrics.forEach(({ key }) => {
+      const vals = defenseRaw.map(r => Number(r[key]) || 0);
+      mins[key] = Math.min(...vals);
+      maxs[key] = Math.max(...vals);
+    });
+
+    const norm = (v, mn, mx) => {
+      const d = mx - mn;
+      if (!Number.isFinite(v)) return 0;
+      if (d <= 0) return 0.5;
+      return (v - mn) / d; // 0..1 higher = worse volume
+    };
+
+    const data = defenseRaw.map(r => {
+      const out = { team: r.team };
+      metrics.forEach(({ key }) => { out[key] = 1 - norm(r[key], mins[key], maxs[key]); });
+      return out;
+    });
+
+    return { data, metrics };
+  }, [defenseRaw]);
+
+  const defenseRadarData = useMemo(() => {
+    if (!selectedTeam || !defenseLeague?.data?.length) return [];
+    const row = defenseLeague.data.find(d => d.team === selectedTeam);
+    if (!row) return [];
+    return defenseLeague.metrics.map(m => ({ metric: m.label, value: Number(row[m.key]) || 0 }));
+  }, [defenseLeague, selectedTeam]);
 
   // Card renderer; each player clickable to open PlayersModal
   function LeadersCard({ title, items, statKey, fmt = (v) => v }) {
@@ -671,128 +1183,6 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
     );
   }
 
-  const bumpy = useMemo(() => {
-    if (!weeklyData?.weeks?.length || !Array.isArray(weeklyData.teams)) return null;
-    const weeks = weeklyData.weeks;
-    const teamCount = weeklyData.teams.length || 20;
-    const series = weeklyData.teams.map(({ team, pos }) => {
-      const pts = (pos || []).map((p, i) => ({ week: weeks[i], pos: p, team }));
-      return { team, data: pts };
-    });
-    return { weeks, teamCount, series };
-  }, [weeklyData]);
-
-  function BumpyTip({ active, payload, label, hoverTeam }) {
-    if (!active || !payload || !payload.length) return null;
-    if (!hoverTeam) return null;
-
-    const item =
-      (hoverTeam && payload.find(p => (p.name || p.dataKey) === hoverTeam)) ||
-      payload.find(p => p?.payload?.team) ||
-      payload[0];
-    if (!item) return null;
-    const team = item.name || item?.payload?.team || "";
-    const pos  = Number(item.value);
-    return (
-      <div className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="font-semibold">{team}</div>
-        <div>Matchweek: <span className="tabular-nums">{label}</span></div>
-        <div>Position: <span className="tabular-nums">{pos}</span></div>
-      </div>
-    );
-  }
-
-  const BumpyDot = (props) => {
-    const { cx, cy, payload } = props;
-    const t = payload?.team;
-    const selected = selectedTeam && t === selectedTeam;
-    const color = selected ? themeColor : "#64748B";
-    const opacity = selectedTeam && !selected ? 0.25 : 1;
-    return (
-      <circle
-        cx={cx}
-        cy={cy}
-        r={selected ? 3.6 : 2.2}
-        fill={color}
-        fillOpacity={opacity}
-        stroke="#ffffff"
-        strokeWidth={0.8}
-        onClick={() => setSelectedTeam(t)}
-        onMouseEnter={() => setHoverTeam(t)}
-        onMouseLeave={() => setHoverTeam(null)}
-        style={{ cursor: "pointer" }}
-      />
-    );
-  };
-
-  const bumpyYTicks = useMemo(() => {
-    if (!bumpy) return [];
-    const N = bumpy.teamCount;
-    return Array.from({ length: N }, (_, i) => i + 1);
-  }, [bumpy]);
-
-  const ROW_PX = 32;
-  const chartHeight = Math.max(560, (bumpy?.teamCount || 20) * ROW_PX);
-
-  const rightLogoPoints = useMemo(() => {
-    if (!bumpy) return [];
-    const weeks = bumpy.weeks;
-    const last = weeks[weeks.length - 1];
-    return (bumpy.series || [])
-      .map((s) => {
-        const lastPt = [...s.data].reverse().find((d) => Number.isFinite(d?.pos));
-        const pos = Number(lastPt?.pos);
-        if (!Number.isFinite(pos)) return null;
-        return { week: last, pos, team: s.team };
-      })
-      .filter(Boolean);
-  }, [bumpy]);
-
-
-  const LogoShape = (props) => {
-    const { cx, cy, payload } = props;
-    const team = payload?.team;
-    const selected = selectedTeam && team === selectedTeam;
-    const dim = selectedTeam && !selected ? 0.35 : 1;
-
-
-    const tx = (cx ?? 0) - 24;
-    const ty = cy ?? 0;
-
-    return (
-      <g
-        transform={`translate(${tx}, ${ty})`}
-        onClick={() => setSelectedTeam((prev) => (prev === team ? "" : team))}
-        onMouseEnter={() => setHoverTeam(team)}
-        onMouseLeave={() => setHoverTeam(null)}
-        style={{ cursor: "pointer", pointerEvents: "all" }}
-      >
-        {selected ? (
-          <rect x={30} y={-12} width={24} height={24} rx={12} ry={12}
-                fill="none" stroke={themeColor} strokeWidth={2} />
-        ) : null}
-        <circle
-          cx={42}
-          cy={0}
-          r={12}
-          fill="#FFFFFF"
-          stroke="#E5E7EB"
-          strokeWidth={1}
-        />
-        <image
-          href={logoUrl(team)}
-          xlinkHref={logoUrl(team)}
-          x={30}
-          y={-12}
-          width={24}
-          height={24}
-          opacity={dim}
-        />
-        <title>{team}</title>
-      </g>
-    );
-  };
-
   return (
     <section id="league-analysis" className="mx-auto mt-10 w-full max-w-6xl px-4 md:px-6">
       <div className="mb-3 flex items-center justify-between">
@@ -805,8 +1195,11 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
           />
           <div>
             <h2 className="text-lg font-semibold">League Data Analysis</h2>
-            <div className="text-xs text-zinc-500 dark:text-zinc-400">
-              {loadingDetails ? "Loading team detail…" : (errDetails ? "Some team details failed to load" : "All teams compared")}
+            <div className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+              {loadingDetails && <Spinner />}
+              {loadingDetails
+                ? "Loading team detail…"
+                : (errDetails ? "Some team details failed to load" : "All teams compared")}
             </div>
           </div>
         </div>
@@ -845,157 +1238,222 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                   <div className="text-xs text-zinc-500">Quick view of identity &amp; impact</div>
                 </div>
               </div>
-
-              <div className="flex flex-wrap gap-2">{insightTags}</div>
+              <div className="flex w-full flex-wrap items-center gap-2 md:ml-auto md:w-auto md:justify-end justify-end">
+                {insightTags}
+              </div>
             </div>
 
             {selectedKpis ? (
-              <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-                <KPI label="NP-xGD / Match" value={round2(selectedKpis.npxgdPM)} sub="Territorial dominance" color={themeColor} />
-                <KPI label="Finishing Ratio" value={round2(selectedKpis.finishRatio)} sub="Goals ÷ xG" avg={round2(leagueAvg.finishRatio)} color={themeColor} />
-                <KPI label="Box Shot Share" value={`${Math.round(selectedKpis.boxShare)}%`} sub="Six-yard + Penalty area" avg={`${Math.round(leagueAvg.boxShare)}%`} color={themeColor} />
-                <KPI label="PPDA" value={round2(selectedKpis.ppda)} sub="Lower = more pressing" avg={round2(leagueAvg.ppda)} color={themeColor} />
+              <>
+                {/* KPI Gauges (team vs league avg) */}
+                <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4">
+                  <KpiGauge
+                    label="Finishing (G/xG)"
+                    value={selectedKpis.finishRatio}
+                    avg={leagueAvg?.finishRatio ?? 1}
+                    min={kpiDomains.finishing[0]}
+                    max={kpiDomains.finishing[1]}
+                    better="higher"
+                    fmt={fmtNum}
+                    color={vis.stroke}
+                    size="md"
+                  />
+                  <KpiGauge
+                    label="Box Shot Share"
+                    value={selectedKpis.boxShare}
+                    avg={leagueAvg?.boxShare ?? 50}
+                    min={kpiDomains.boxShare[0]}
+                    max={kpiDomains.boxShare[1]}
+                    better="higher"
+                    fmt={fmtPct}
+                    color={vis.stroke}
+                    size="md"
+                  />
+                  <KpiGauge
+                    label="PPDA (↓ better)"
+                    value={selectedKpis.ppda}
+                    avg={leagueAvg?.ppda ?? 11}
+                    min={kpiDomains.ppda[0]}
+                    max={kpiDomains.ppda[1]}
+                    better="lower"
+                    fmt={fmtNum}
+                    color={vis.stroke}
+                    size="md"
+                  />
+                  {selectedFb && (
+                    <KpiGauge
+                      label="Progressions /90"
+                      value={(selectedFb.progPPer90 || 0) + (selectedFb.progCPer90 || 0)}
+                      avg={fbrefAvg ? (fbrefAvg.progTotalPer90 || 0) : 0}
+                      min={kpiDomains.prog[0]}
+                      max={kpiDomains.prog[1]}
+                      better="higher"
+                      fmt={fmtNum}
+                      color={vis.stroke}
+                      size="md"
+                    />
+                  )}
               </div>
               
-            ) : null}
+                {/* Optional: more gauges if FBref is present */}
+                {selectedFb && (
+                  <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4">
+                    <KpiGauge
+                      label="SCA /90"
+                      value={selectedFb.sca90}
+                      avg={fbrefAvg ? (fbrefAvg.sca90 || 0) : 0}
+                      min={kpiDomains.sca90[0]}
+                      max={kpiDomains.sca90[1]}
+                      better="higher"
+                      fmt={fmtNum}
+                      color={vis.stroke}
+                      size="md"
+                    />
+                    <KpiGauge
+                      label="GCA /90"
+                      value={selectedFb.gca90}
+                      avg={fbrefAvg ? (fbrefAvg.gca90 || 0) : 0}
+                      min={kpiDomains.gca90[0]}
+                      max={kpiDomains.gca90[1]}
+                      better="higher"
+                      fmt={fmtNum}
+                      color={vis.stroke}
+                      size="md"
+                    />
+                    <KpiGauge
+                      label="Box touches /90"
+                      value={selectedFb.boxTouchesPer90 || 0}
+                      avg={fbrefAvg ? (fbrefAvg.boxTouchesPer90 || 0) : 0}
+                      min={kpiDomains.boxT90[0]}
+                      max={kpiDomains.boxT90[1]}
+                      better="higher"
+                      fmt={fmtNum}
+                      color={vis.stroke}
+                      size="md"
+                    />
+                    <KpiGauge label="Dribble success"
+                      value={selectedFb.takeOnSuccPct || 0}
+                      avg={fbrefAvg ? (fbrefAvg.takeOnSuccPct || 0) : 0}
+                      min={kpiDomains.drbSucc[0]} max={kpiDomains.drbSucc[1]}
+                      better="higher" 
+                      fmt={fmtPct} 
+                      color={vis.stroke} 
+                      size="md" 
+                    />
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => onOpenTeam?.(selectedRow.Team)}
-                className="inline-flex items-center rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
-              >
-                Open {selectedRow.Team} in Team View
-              </button>
-              <span className="text-[11px] text-zinc-500">Tags and KPIs update as you switch teams above.</span>
-            </div>
+                    {/* Keep one classic KPI if you want balance */}
+                    {/* <KPI label="Dribble success" value={`${Math.round(selectedFb.takeOnSuccPct)}%`} avg={fbrefAvg ? `${Math.round(fbrefAvg.takeOnSuccPct)}%` : undefined} color={vis.stroke} /> */}
           </div>
         )}
-      </Panel>
+              </>
+            ) : null}
 
-      {/* ── Bumpy Chart — with right-side logos ── */}
-      <div className="mt-4">
-        <Panel title="Weekly Team League Movement" help={HELP.bumpy}>
-          {errWeekly ? (
-            <div className="text-sm text-rose-600">Failed to load weekly table.</div>
-          ) : (loadingWeekly || !bumpy) ? (
-            <div className="text-sm text-zinc-500">Loading weekly table…</div>
-          ) : (
-            <>
-              <div 
-                style={{ height: chartHeight }}
-                className="noselect"
-                onMouseDown={(e) => e.preventDefault()}
-                onDoubleClick={(e) => e.preventDefault()}                
-              >
+
+            {/* ── Style + Defensive Fingerprints (side by side) ── */}
+            <div className="mt-3 border-t border-zinc-200 dark:border-zinc-800" />
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* ── Style Fingerprint (Radar) ── */}
+              <div className="rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+                <div className="mb-1 flex items-center gap-2">
+                  <img
+                    src={logoUrl(selectedRow.Team)}
+                    alt=""
+                    className="h-6 w-6 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
+                    onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
+                  />
+                  <div className="text-sm font-semibold">{selectedRow.Team} — Style Profile</div>
+                  <div className="ml-auto text-[11px] text-zinc-500">
+                    {fbrefLoading ? "Loading…" : (fbrefErr ? "Partial FBref data" : "Normalized vs league")}
+                  </div>
+                </div>
+                <div className="h-72">
                 <ResponsiveContainer>
-                  <LineChart margin={{ top: 10, right: 96, left: 8, bottom: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis
-                      type="number"
-                      dataKey="week"
-                      ticks={bumpy.weeks}
-                      domain={[bumpy.weeks[0], bumpy.weeks[bumpy.weeks.length - 1]]}
-                      tick={{ fontSize: 12 }}
-                      label={{ value: "Matchweek", position: "insideBottom", offset: -4, fontSize: 12 }}
+                    <RadarChart data={styleRadarData} outerRadius="80%">
+                      <PolarGrid />
+                      <PolarAngleAxis dataKey="metric" tick={{ fontSize: 12 }} />
+                      <PolarRadiusAxis angle={30} domain={[0, 1]} tick={false} />
+                      <Radar
+                        name={selectedRow.Team}
+                        dataKey="value"
+                        stroke={vis.stroke}
+                        fill={vis.stroke}
+                        fillOpacity={0.5}
+                        isAnimationActive
+                      />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="mt-1 text-[11px] text-zinc-500">
+                  Pressing (duels/90 or inverse PPDA), Possession (%), Progression (prog passes + carries), Creation (GCA/90), Finishing (Goals ÷ xG). Values are scaled 0–1 across the league.
+                </div>
+              </div>
+
+              {/* ── Defensive Fingerprint (vs_team) ── */}
+              <div className="rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+                <div className="mb-1 flex items-center gap-2">
+                  <img
+                    src={logoUrl(selectedRow.Team)}
+                    alt=""
+                    className="h-6 w-6 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
+                    onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
+                  />
+                  <div className="text-sm font-semibold">{selectedRow.Team} — Defensive Profile</div>
+                  <div className="ml-auto text-[11px] text-zinc-500">
+                    {fbrefLoading ? "Loading…" : (fbrefErr ? "Partial vs-team data" : "Higher = better (normalized)")}
+                  </div>
+                </div>
+                <div className="h-72">
+                  <ResponsiveContainer>
+                    <RadarChart data={defenseRadarData} outerRadius="80%">
+                      <PolarGrid />
+                      <PolarAngleAxis dataKey="metric" tick={{ fontSize: 12 }} />
+                      <PolarRadiusAxis angle={30} domain={[0, 1]} tick={false} />
+                      <Radar
+                        name={`${selectedRow.Team} Defense`}
+                        dataKey="value"
+                        stroke={vis.stroke}
+                        fill={vis.stroke}
+                        fillOpacity={0.5}
+                        isAnimationActive
                     />
-
-                    {/* LEFT Y axis (numbers) */}
-                    <YAxis
-                      yAxisId="left"
-                      type="number"
-                      domain={[1, bumpy.teamCount]}
-                      reversed
-                      ticks={bumpyYTicks}
-                      allowDecimals={false}
-                      dataKey="pos"
-                      padding={{ top: 6, bottom: 6 }}
-                      tick={{ fontSize: 10 }}
-                      label={{ value: "Table Position (1 = top)", angle: -90, position: "insideLeft", fontSize: 12 }}
-                    />
-
-                    <Tooltip content={(p) => <BumpyTip {...p} hoverTeam={hoverTeam} />} />
-
-                    {/* Lines */}
-                    {bumpy.series
-                      .filter(s => !selectedTeam || s.team !== selectedTeam)
-                      .map((s) => (
-                        <Line
-                          key={`line-${s.team}`}
-                          yAxisId="left"
-                          data={s.data}
-                          type="monotone"
-                          dataKey="pos"
-                          name={s.team}
-                          stroke="#94A3B8"
-                          strokeOpacity={selectedTeam ? 0.25 : 0.6}
-                          strokeWidth={5}
-                          dot={<BumpyDot />}
-                          isAnimationActive={false}
-                          onClick={() => setSelectedTeam(s.team)}
-                          onMouseOver={() => setHoverTeam(s.team)}
-                          onMouseOut={() => setHoverTeam(null)}
-                        />
-                      ))}
-
-                    {selectedTeam && (() => {
-                      const sel = bumpy.series.find(s => s.team === selectedTeam);
-                      if (!sel) return null;
-                      return (
-                        <Line
-                          key={`line-selected-${sel.team}`}
-                          yAxisId="left"
-                          data={sel.data}
-                          type="monotone"
-                          dataKey="pos"
-                          name={sel.team}
-                          stroke={themeColor}
-                          strokeWidth={3}
-                          dot={<BumpyDot />}
-                          isAnimationActive={false}
-                        />
-                      );
-                    })()}
-
-                    {/* Logo rail pinned on the right axis */}
-                    <Scatter
-                      yAxisId="left"
-                      data={rightLogoPoints}
-                      isAnimationActive={false}
-                      name="logos"
-                      shape={LogoShape}
-                    />
-                  </LineChart>
+                    </RadarChart>
                 </ResponsiveContainer>
               </div>
               <div className="mt-1 text-[11px] text-zinc-500">
-                Click a line, dot, or a logo to highlight a team.
+                  Normalized league-wide and invert “against” volumes so bigger polygon ≈ better defensive profile.
               </div>
-            </>
-          )}
-        </Panel>
+              </div>
       </div>
 
-      {/* ── Metrics: League Leaders ── */}
-      <div className="mt-4">
-        <Panel title="League Leaders" help="Top scorers, assisters, highest xG and xA.">
-          {errLeaders ? (
-            <div className="text-sm text-rose-600">Failed to load league leaders.</div>
-          ) : (
-            <>
-              {loadingLeaders ? (
-                <div className="text-sm text-zinc-500">Loading leaders…</div>
-              ) : (
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
-                  <LeadersCard title="Top Scorers" items={leaders.goals}   statKey="goals" />
-                  <LeadersCard title="Top Assists" items={leaders.assists} statKey="assists" />
-                  <LeadersCard title="Highest xG"  items={leaders.xg}      statKey="xG" fmt={(v)=> (Number(v)||0).toFixed(2)} />
-                  <LeadersCard title="Highest xA"  items={leaders.xa}      statKey="xA" fmt={(v)=> (Number(v)||0).toFixed(2)} />
+            <div className="mt-4 flex flex-col items-center gap-2 text-center">
+              <button
+                onClick={() => onOpenTeam?.(selectedRow.Team)}
+                aria-label={`Open ${selectedRow.Team} in Team View`}
+                className="
+                  group inline-flex w-full sm:w-auto items-center justify-center gap-2
+                  rounded-xl bg-indigo-600 px-4 py-2.5 text-white text-sm md:text-base font-semibold
+                  shadow-sm ring-1 ring-indigo-500/0
+                  hover:bg-indigo-700 hover:ring-indigo-500/20
+                  focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/40
+                  active:scale-[.99] transition
+                "
+              >
+                <span>Open {selectedRow.Team} in Team View</span>
+                <svg
+                  className="h-4 w-4 transition-transform duration-200 ease-out group-hover:translate-x-0.5"
+                  viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                >
+                  <path
+                    fillRule="evenodd" clipRule="evenodd"
+                    d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 111.414-1.414l4 4a1 1 0 010 
+                      1.414l-4 4a1 1 0 01-1.414 0z"
+                  />
+                </svg>
+              </button>
+            </div>
                 </div>
-              )}
-            </>
           )}
         </Panel>
-      </div>
 
       {/* Scatters */}
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -1053,7 +1511,7 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
       </div>
 
       {/* EXTRA VIS: Finishing vs Defensive Overperformance */}
-      <div className="mt-4">
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Panel title="Finishing vs Defensive Overperformance" help={HELP.fin_def}>
           <div className="h-72">
             <ResponsiveContainer>
@@ -1081,9 +1539,7 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
           </div>
           <div className="mt-1 text-[11px] text-zinc-500">&gt;1 on both axes suggests clinical finishing and conceding fewer than expected.</div>
         </Panel>
-      </div>
 
-      <div className="mt-4">
         <Panel title="Goals vs xG — per match" help={HELP.g_xg_scatter}>
           <div className="h-80">
             <ResponsiveContainer>
@@ -1106,10 +1562,10 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                   <LabelList dataKey="team" position="top" style={{ fontSize: 10 }} />
                 </Scatter>
               </ScatterChart>
+            </ResponsiveContainer>
+          </div>
               <div className="mt-1 text-[11px] text-zinc-500">
                 Diagonal = neutral finishing; above = outperforming xG; below = underperforming.
-              </div>
-            </ResponsiveContainer>
           </div>
         </Panel>
       </div>
@@ -1180,10 +1636,256 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
           );
         })()}
       </div>
+      {/* ── Metrics: League Leaders ── */}
+      <div className="mt-4">
+        <Panel title="League Leaders" help="Top scorers, assisters, highest xG and xA.">
+          {errLeaders ? (
+            <div className="text-sm text-rose-600">Failed to load league leaders.</div>
+          ) : (
+            <>
+              {loadingLeaders ? (
+                <div className="text-sm text-zinc-500">Loading leaders…</div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+                  <LeadersCard title="Top Scorers" items={leaders.goals}   statKey="goals" />
+                  <LeadersCard title="Top Assists" items={leaders.assists} statKey="assists" />
+                  <LeadersCard title="Highest xG"  items={leaders.xg}      statKey="xG" fmt={(v)=> (Number(v)||0).toFixed(2)} />
+                  <LeadersCard title="Highest xA"  items={leaders.xa}      statKey="xA" fmt={(v)=> (Number(v)||0).toFixed(2)} />
+                </div>
+              )}
+            </>
+          )}
+        </Panel>
+      </div>
     </section>
   );
 }
 
+function WeeklyMovementPanel({ apiBase }) {
+  const [weeklyData, setWeeklyData] = useState(null);
+  const [loadingWeekly, setLoadingWeekly] = useState(false);
+  const [errWeekly, setErrWeekly] = useState(null);
+  const [hoverTeam, setHoverTeam] = useState(null);
+  const [selectedTeam, setSelectedTeam] = useState("");
+  const themeColor = useMemo(() => getTeamPrimary(selectedTeam), [selectedTeam]);
+
+  // Load weekly table
+  useEffect(() => {
+    if (!apiBase) return;
+    let stop = false;
+    (async () => {
+      try {
+        setLoadingWeekly(true);
+        setErrWeekly(null);
+        const json = await fetchJson(`${apiBase}/weekly_table`);
+        if (stop) return;
+        const data = json?.data || json;
+        setWeeklyData(data);
+      } catch (e) {
+        if (!stop) setErrWeekly(String(e));
+      } finally {
+        if (!stop) setLoadingWeekly(false);
+      }
+    })();
+    return () => { stop = true; };
+  }, [apiBase]);
+
+  const bumpy = useMemo(() => {
+    if (!weeklyData?.weeks?.length || !Array.isArray(weeklyData.teams)) return null;
+    const weeks = weeklyData.weeks;
+    const teamCount = weeklyData.teams.length || 20;
+    const series = weeklyData.teams.map(({ team, pos }) => {
+      const pts = (pos || []).map((p, i) => ({ week: weeks[i], pos: p, team }));
+      return { team, data: pts };
+    });
+    return { weeks, teamCount, series };
+  }, [weeklyData]);
+
+  const bumpyYTicks = useMemo(() => {
+    if (!bumpy) return [];
+    const N = bumpy.teamCount;
+    return Array.from({ length: N }, (_, i) => i + 1);
+  }, [bumpy]);
+
+  const ROW_PX = 32;
+  const chartHeight = Math.max(560, (bumpy?.teamCount || 20) * ROW_PX);
+
+  const rightLogoPoints = useMemo(() => {
+    if (!bumpy) return [];
+    const weeks = bumpy.weeks;
+    const last = weeks[weeks.length - 1];
+    return (bumpy.series || [])
+      .map((s) => {
+        const lastPt = [...s.data].reverse().find((d) => Number.isFinite(d?.pos));
+        const pos = Number(lastPt?.pos);
+        if (!Number.isFinite(pos)) return null;
+        return { week: last, pos, team: s.team };
+      })
+      .filter(Boolean);
+  }, [bumpy]);
+
+  function BumpyTip({ active, payload, label, hoverTeam }) {
+    if (!active || !payload || !payload.length || !hoverTeam) return null;
+    const item =
+      (hoverTeam && payload.find(p => (p.name || p.dataKey) === hoverTeam)) ||
+      payload.find(p => p?.payload?.team) ||
+      payload[0];
+    if (!item) return null;
+    const team = item.name || item?.payload?.team || "";
+    const pos  = Number(item.value);
+    return (
+      <div className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="font-semibold">{team}</div>
+        <div>Matchweek: <span className="tabular-nums">{label}</span></div>
+        <div>Position: <span className="tabular-nums">{pos}</span></div>
+      </div>
+    );
+  }
+
+  const BumpyDot = (props) => {
+    const { cx, cy, payload } = props;
+    const t = payload?.team;
+    const selected = selectedTeam && t === selectedTeam;
+    const color = selected ? themeColor : "#64748B";
+    const opacity = selectedTeam && !selected ? 0.25 : 1;
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        r={selected ? 3.6 : 2.2}
+        fill={color}
+        fillOpacity={opacity}
+        stroke="#ffffff"
+        strokeWidth={0.8}
+        onClick={() => setSelectedTeam(t)}
+        onMouseEnter={() => setHoverTeam(t)}
+        onMouseLeave={() => setHoverTeam(null)}
+        style={{ cursor: "pointer" }}
+      />
+    );
+  };
+
+  const LogoShape = (props) => {
+    const { cx, cy, payload } = props;
+    const team = payload?.team;
+    const selected = selectedTeam && team === selectedTeam;
+    const dim = selectedTeam && !selected ? 0.35 : 1;
+    const tx = (cx ?? 0) - 24;
+    const ty = cy ?? 0;
+    return (
+      <g
+        transform={`translate(${tx}, ${ty})`}
+        onClick={() => setSelectedTeam((prev) => (prev === team ? "" : team))}
+        onMouseEnter={() => setHoverTeam(team)}
+        onMouseLeave={() => setHoverTeam(null)}
+        style={{ cursor: "pointer", pointerEvents: "all" }}
+      >
+        {selected ? (
+          <rect x={30} y={-12} width={24} height={24} rx={12} ry={12}
+                fill="none" stroke={themeColor} strokeWidth={2} />
+        ) : null}
+        <circle cx={42} cy={0} r={12} fill="#FFFFFF" stroke="#E5E7EB" strokeWidth={1} />
+        <image href={logoUrl(team)} xlinkHref={logoUrl(team)} x={30} y={-12} width={24} height={24} opacity={dim} />
+        <title>{team}</title>
+      </g>
+    );
+  };
+
+  return (
+    <Panel title="Weekly Team League Movement" help={HELP.bumpy}>
+      {errWeekly ? (
+        <div className="text-sm text-rose-600">Failed to load weekly table.</div>
+      ) : (loadingWeekly || !bumpy) ? (
+        <div className="text-sm text-zinc-500">Loading weekly table…</div>
+      ) : (
+        <>
+          <div
+            style={{ height: chartHeight }}
+            className="noselect"
+            onMouseDown={(e) => e.preventDefault()}
+            onDoubleClick={(e) => e.preventDefault()}
+          >
+            <ResponsiveContainer>
+              <LineChart margin={{ top: 10, right: 96, left: 8, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  type="number"
+                  dataKey="week"
+                  ticks={bumpy.weeks}
+                  domain={[bumpy.weeks[0], bumpy.weeks[bumpy.weeks.length - 1]]}
+                  tick={{ fontSize: 12 }}
+                  label={{ value: "Matchweek", position: "insideBottom", offset: -4, fontSize: 12 }}
+                />
+                <YAxis
+                  yAxisId="left"
+                  type="number"
+                  domain={[1, bumpy.teamCount]}
+                  reversed
+                  ticks={bumpyYTicks}
+                  allowDecimals={false}
+                  dataKey="pos"
+                  padding={{ top: 6, bottom: 6 }}
+                  tick={{ fontSize: 10 }}
+                  label={{ value: "Table Position (1 = top)", angle: -90, position: "insideLeft", fontSize: 12 }}
+                />
+                <Tooltip content={(p) => <BumpyTip {...p} hoverTeam={hoverTeam} />} />
+                {/* Lines */}
+                {bumpy.series
+                  .filter(s => !selectedTeam || s.team !== selectedTeam)
+                  .map((s) => (
+                    <Line
+                      key={`line-${s.team}`}
+                      yAxisId="left"
+                      data={s.data}
+                      type="monotone"
+                      dataKey="pos"
+                      name={s.team}
+                      stroke="#94A3B8"
+                      strokeOpacity={selectedTeam ? 0.25 : 0.6}
+                      strokeWidth={5}
+                      dot={<BumpyDot />}
+                      isAnimationActive={false}
+                      onClick={() => setSelectedTeam(s.team)}
+                      onMouseOver={() => setHoverTeam(s.team)}
+                      onMouseOut={() => setHoverTeam(null)}
+                    />
+                  ))}
+                {selectedTeam && (() => {
+                  const sel = bumpy.series.find(s => s.team === selectedTeam);
+                  if (!sel) return null;
+                  return (
+                    <Line
+                      key={`line-selected-${sel.team}`}
+                      yAxisId="left"
+                      data={sel.data}
+                      type="monotone"
+                      dataKey="pos"
+                      name={sel.team}
+                      stroke={themeColor}
+                      strokeWidth={3}
+                      dot={<BumpyDot />}
+                      isAnimationActive={false}
+                    />
+                  );
+                })()}
+                <Scatter
+                  yAxisId="left"
+                  data={rightLogoPoints}
+                  isAnimationActive={false}
+                  name="logos"
+                  shape={LogoShape}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-1 text-[11px] text-zinc-500">
+            Click a line, dot, or a logo to highlight a team.
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
 
 /* ───────────────────────────── Main App ───────────────────────────── */
 export default function App() {
@@ -1359,7 +2061,18 @@ export default function App() {
         onOpenResults={() => { setResultsModalOpen(true); setModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setPlayersOpen(false); setContactOpen(false); setRoute("#results"); }}
         onOpenFixtures={() => { setFixturesModalOpen(true); setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setPlayersOpen(false); setContactOpen(false); setRoute("#fixtures"); }}
         onOpenPlayers={() => { setPlayersOpen(true); setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setContactOpen(false); setRoute("#players"); }}
-        onOpenStandings={() => scrollToId("league-standings")}
+        onOpenStandings={() => {
+          setModalOpen(false);
+          setResultsModalOpen(false);
+          setFixturesModalOpen(false);
+          setPlayersOpen(false);
+          setMatchCenterOpen(false);
+          setContactOpen(false);
+          setPlayersInitial(null);
+          setActiveMatchId(null);
+          setModalTeamName(null);
+          requestAnimationFrame(() => scrollToId("league-standings"));
+        }}
         onOpenContact={() => { setContactOpen(true); setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setPlayersOpen(false); setRoute("#contact"); }}
         onGoHome={() => {
           setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false);
@@ -1369,34 +2082,25 @@ export default function App() {
       />
 
       <main className="px-4 pt-4 pb-10 md:px-6">
-        {/* Recent results */}
+        {/* Recent results
         <div className="mt-8">
           <RecentResults apiBase={API_BASE} onOpenMatch={openMatch} onShowAll={() => { setResultsModalOpen(true); setRoute("#results"); }} />
-        </div>
+        </div> */}
 
         {/* Upcoming fixtures */}
         <section id="upcoming-fixtures" className="mx-auto mt-10 w-full max-w-6xl px-4 md:px-6">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">Upcoming Fixtures</h2>
-            <button
-              onClick={() => { setFixturesModalOpen(true); setRoute("#fixtures"); }}
-              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
-            >
-              View full fixture list
-            </button>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="flex justify-center">
-              <div className="w-full max-w-5xl">
-                <RollingFixtures endpoint={`${API_BASE}/fixtures/upcoming`} limit={10} autoAdvanceMs={2800} />
-              </div>
-            </div>
+          <div className="mt-8">
+            <ResultsFixturesDeck
+              apiBase={API_BASE}
+              onOpenMatch={openMatch}
+              onShowAllResults={() => { setResultsModalOpen(true); setRoute("#results"); }}
+              onShowAllFixtures={() => { setFixturesModalOpen(true); setRoute("#fixtures"); }}
+            />
           </div>
         </section>
 
         {/* ── League Data Analysis (inline) ── */}
-        <LeagueAnalysisSection apiBase={API_BASE} standings={standings} teams={teams} onOpenTeam={openTeam} onOpenPlayer={openPlayer} />
+        <LeagueAnalysisSection apiBase={API_BASE} standings={standings} teams={teams} onOpenTeam={openTeam} onOpenPlayer={openPlayer} isDark={theme === "dark"} />
 
         {/* Standings */}
         <h2 id="league-standings" className="mb-4 mt-8 text-center text-2xl font-semibold tracking-tight">
@@ -1404,8 +2108,14 @@ export default function App() {
         </h2>
         <div className="flex justify-center">
           <div className="w-full max-w-4xl">
-            <StandingsTable endpoint={`${API_BASE}/standings`} onOpenTeam={openTeam} />
+            <StandingsTable
+              rows={standings}  
+              onOpenTeam={openTeam} />
           </div>
+        </div>
+        {/* Weekly movement placed below standings */}
+        <div className="mx-auto mt-4 w-full max-w-6xl">
+          <WeeklyMovementPanel apiBase={API_BASE} />
         </div>
       </main>
 
@@ -1452,6 +2162,7 @@ export default function App() {
         apiBase={API_BASE}
         teams={teams}
         onClose={() => setFixturesModalOpen(false)}
+        onOpenMatch={openMatch}
       />
 
       {/* Players */}
