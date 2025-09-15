@@ -186,7 +186,7 @@ def _geo_lookup(ip: str) -> Dict[str, Any]:
             data = r.json() or {}
             # normalize fields
             out = {
-                "country_iso2": (data.get("country_iso2") or "").upper(),
+                "country_iso2": (data.get("country_iso2") or data.get("country_code") or "").upper(),
                 "country_name": data.get("country_name") or "",
                 "region":       data.get("region") or data.get("region_name") or "",
                 "city":         data.get("city") or "",

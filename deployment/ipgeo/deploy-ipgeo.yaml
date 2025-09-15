@@ -66,10 +66,8 @@ data:
       return cf or (xff.split(",")[0].strip() if xff else request.remote_addr)
 
     def _extract(record):
-      """Handle different MMDB schemas (MaxMind/DB-IP)."""
       if not record:
         return {}
-      # Try MaxMind-like structure
       country_code = (
         record.get("country", {}).get("iso_code")
         or record.get("countryIsoCode")
@@ -82,14 +80,12 @@ data:
         or record.get("country_name")
         or record.get("countryName")
       )
-      # Region / subdivision
       region = None
       subs = record.get("subdivisions") or []
       if subs and isinstance(subs, list):
         region = subs[0].get("names", {}).get("en") or subs[0].get("iso_code") or subs[0].get("name")
       region = region or record.get("stateProv") or record.get("region_name")
 
-      # City
       city = (
         record.get("city", {}).get("names", {}).get("en")
         or record.get("city", {}).get("name")
@@ -97,13 +93,12 @@ data:
         or record.get("cityName")
       )
 
-      # Location
       loc = record.get("location", {}) if isinstance(record.get("location", {}), dict) else {}
       lat = loc.get("latitude", record.get("latitude"))
       lon = loc.get("longitude", record.get("longitude"))
 
       return {
-        "country_code": country_code,
+        "country_code": (country_code or "").upper() or None,
         "country_name": country_name,
         "region": region,
         "city": city,
@@ -114,12 +109,12 @@ data:
     @app.get("/healthz")
     def healthz():
       try:
-        r = get_reader()
-        # quick parse of localhost (may be None); just ensure file is open
+        _ = get_reader()
         return jsonify(ok=True, db=os.path.exists(MMDB_PATH))
       except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
 
+    # Existing JSON endpoint (kept for convenience)
     @app.get("/json")
     @app.get("/json/<ip>")
     def json_lookup(ip=None):
@@ -128,13 +123,43 @@ data:
       data = _extract(rec)
       return jsonify({"ip": ip, **data})
 
-    @app.get("/country")
-    @app.get("/country/<ip>")
-    def country_lookup(ip=None):
-      ip = _client_ip_from_req(ip)
+    # New: /lookup and /lookup/<ip> returning keys your Flask expects
+    @app.get("/lookup")
+    def lookup_query():
+      ip = (request.args.get("ip") or "").strip()
+      if not ip:
+        return jsonify(error="missing ip"), 400
       rec = get_reader().get(ip)
       data = _extract(rec)
-      return jsonify({"ip": ip, "country_code": data.get("country_code"), "country_name": data.get("country_name")})
+      # normalize to *your* Flask expectations
+      return jsonify({
+        "ip": ip,
+        "country_iso2": data.get("country_code"),
+        "country_name": data.get("country_name"),
+        "region": data.get("region"),
+        "city": data.get("city"),
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        # ASN/ISP not in DB-IP City Lite; left blank
+        "asn": "",
+        "isp": "",
+      })
+
+    @app.get("/lookup/<ip>")
+    def lookup_path(ip):
+      rec = get_reader().get(ip)
+      data = _extract(rec)
+      return jsonify({
+        "ip": ip,
+        "country_iso2": data.get("country_code"),
+        "country_name": data.get("country_name"),
+        "region": data.get("region"),
+        "city": data.get("city"),
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        "asn": "",
+        "isp": "",
+      })
 ---
 apiVersion: apps/v1
 kind: Deployment
