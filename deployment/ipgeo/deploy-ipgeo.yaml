@@ -1,0 +1,273 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ipgeo-pv
+  labels:
+    app: ipgeo
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["k8-node4"]
+  hostPath:
+    path: /data/ipgeo
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ipgeo-pvc
+  namespace: epl-data
+  labels:
+    app: ipgeo
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: ""
+  volumeName: ipgeo-pv
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ipgeo-app
+  namespace: epl-data
+data:
+  ipgeo.py: |
+    import os
+    from flask import Flask, jsonify, request
+    import maxminddb
+
+    MMDB_PATH = os.getenv("MMDB_PATH", "/data/mmdb/dbip-city-lite.mmdb")
+
+    app = Flask(__name__)
+    reader = None
+
+    def get_reader():
+      global reader
+      if reader is None:
+        reader = maxminddb.open_database(MMDB_PATH)
+      return reader
+
+    def _client_ip_from_req(explicit_ip=None):
+      if explicit_ip:
+        return explicit_ip
+      xff = request.headers.get("X-Forwarded-For", "")
+      cf = request.headers.get("CF-Connecting-IP")
+      return cf or (xff.split(",")[0].strip() if xff else request.remote_addr)
+
+    def _extract(record):
+      """Handle different MMDB schemas (MaxMind/DB-IP)."""
+      if not record:
+        return {}
+      # Try MaxMind-like structure
+      country_code = (
+        record.get("country", {}).get("iso_code")
+        or record.get("countryIsoCode")
+        or record.get("country_code")
+        or record.get("countryCode")
+      )
+      country_name = (
+        record.get("country", {}).get("names", {}).get("en")
+        or record.get("country")
+        or record.get("country_name")
+        or record.get("countryName")
+      )
+      # Region / subdivision
+      region = None
+      subs = record.get("subdivisions") or []
+      if subs and isinstance(subs, list):
+        region = subs[0].get("names", {}).get("en") or subs[0].get("iso_code") or subs[0].get("name")
+      region = region or record.get("stateProv") or record.get("region_name")
+
+      # City
+      city = (
+        record.get("city", {}).get("names", {}).get("en")
+        or record.get("city", {}).get("name")
+        or record.get("city")
+        or record.get("cityName")
+      )
+
+      # Location
+      loc = record.get("location", {}) if isinstance(record.get("location", {}), dict) else {}
+      lat = loc.get("latitude", record.get("latitude"))
+      lon = loc.get("longitude", record.get("longitude"))
+
+      return {
+        "country_code": country_code,
+        "country_name": country_name,
+        "region": region,
+        "city": city,
+        "latitude": lat,
+        "longitude": lon,
+      }
+
+    @app.get("/healthz")
+    def healthz():
+      try:
+        r = get_reader()
+        # quick parse of localhost (may be None); just ensure file is open
+        return jsonify(ok=True, db=os.path.exists(MMDB_PATH))
+      except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
+
+    @app.get("/json")
+    @app.get("/json/<ip>")
+    def json_lookup(ip=None):
+      ip = _client_ip_from_req(ip)
+      rec = get_reader().get(ip)
+      data = _extract(rec)
+      return jsonify({"ip": ip, **data})
+
+    @app.get("/country")
+    @app.get("/country/<ip>")
+    def country_lookup(ip=None):
+      ip = _client_ip_from_req(ip)
+      rec = get_reader().get(ip)
+      data = _extract(rec)
+      return jsonify({"ip": ip, "country_code": data.get("country_code"), "country_name": data.get("country_name")})
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipgeo
+  namespace: epl-data
+  labels:
+    app: ipgeo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ipgeo
+  template:
+    metadata:
+      labels:
+        app: ipgeo
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: "k8-node4"
+      securityContext:
+        fsGroup: 1000
+      volumes:
+        - name: mmdb
+          persistentVolumeClaim:
+            claimName: ipgeo-pvc
+        - name: app
+          configMap:
+            name: ipgeo-app
+      initContainers:
+        - name: fetch-db
+          image: curlimages/curl:8.8.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+          env:
+            - name: DB_DIR
+              value: /data/mmdb
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p "$DB_DIR"
+              cd "$DB_DIR"
+
+              Y="$(date -u +%Y)"
+              M="$(date -u +%m)"
+              if [ "$M" = "01" ]; then PY=$((Y-1)); PM=12; else PY="$Y"; PM=$((10#$M - 1)); fi
+              ym_now="$(date -u +%Y-%m)"
+              ym_prev="$(printf "%04d-%02d" "$PY" "$PM")"
+
+              URL1="https://download.db-ip.com/free/dbip-city-lite-latest.mmdb.gz"
+              URL2="https://download.db-ip.com/free/dbip-city-lite-${ym_now}.mmdb.gz"
+              URL3="https://download.db-ip.com/free/dbip-city-lite-${ym_prev}.mmdb.gz"
+
+              for u in "$URL1" "$URL2" "$URL3"; do
+                echo "Trying $u"
+                if curl -fSL -o dbip.mmdb.gz "$u"; then
+                  echo "Downloaded: $u"
+                  break
+                fi
+              done
+
+              [ -s dbip.mmdb.gz ] || { echo "All downloads failed"; exit 1; }
+
+              gunzip -f dbip.mmdb.gz
+              mv -f dbip.mmdb dbip-city-lite.mmdb || true
+              chown -R 1000:1000 "$DB_DIR"
+              echo "DB-IP ready at $DB_DIR/dbip-city-lite.mmdb"
+          volumeMounts:
+            - name: mmdb
+              mountPath: /data/mmdb
+      containers:
+        - name: api
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: MMDB_PATH
+              value: /data/mmdb/dbip-city-lite.mmdb
+          workingDir: /app
+          command: ["/bin/sh","-c"]
+          args:
+            - >
+              set -euo pipefail;
+              pip install --no-cache-dir flask gunicorn maxminddb;
+              exec gunicorn -w 2 -b 0.0.0.0:8080 ipgeo:app
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: mmdb
+              mountPath: /data/mmdb
+            - name: app
+              mountPath: /app/ipgeo.py
+              subPath: ipgeo.py
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ipgeo
+  namespace: epl-data
+  labels:
+    app: ipgeo
+spec:
+  type: ClusterIP
+  selector:
+    app: ipgeo
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

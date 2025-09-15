@@ -6,3 +6,4 @@ gunicorn
 prometheus_client
 ua-parser
 user-agents
+requests

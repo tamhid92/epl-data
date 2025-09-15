@@ -124,7 +124,12 @@ spec:
             - name: CORS_ORIGINS
               valueFrom:
                 configMapKeyRef: { name: epl-api-config, key: CORS_ORIGINS }
-            
+            - name: GEO_URL
+              value: "http://ipgeo.epl-data.svc.cluster.local:8080"
+            - name: GEO_TIMEOUT
+              value: "0.35"
+            - name: GEO_CACHE_TTL
+              value: "1800"
             - name: DB_USER
               valueFrom:
                 configMapKeyRef: { name: db-config, key: DB_SUPERUSER }

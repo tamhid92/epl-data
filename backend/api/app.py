@@ -18,6 +18,9 @@ from psycopg2.pool import SimpleConnectionPool
 from typing import Optional
 from ua_parser import user_agent_parser
 from user_agents import parse as ua_parse
+import ipaddress
+import requests
+from functools import lru_cache
 
 # -------------------- Prometheus --------------------
 from prometheus_client import (
@@ -32,6 +35,10 @@ DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "epl")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS", "")
+
+GEO_URL = os.getenv("GEO_URL", "http://ipgeo.epl-data.svc.cluster.local:8080")
+GEO_TIMEOUT = float(os.getenv("GEO_TIMEOUT", "0.35"))     # seconds
+GEO_CACHE_TTL = int(os.getenv("GEO_CACHE_TTL", "1800"))   # seconds (30m)
 
 POOL: Optional[SimpleConnectionPool] = None
 POOL_LOCK = threading.Lock()
@@ -139,6 +146,63 @@ def _parse_ua(ua_str: str):
     dev = _device_family(ua_str or "")
     return dev, os_fam, os_major, browser, browser_major
 
+_geo_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+def _geo_cache_get(ip: str) -> Optional[Dict[str, Any]]:
+    now = time.time()
+    ent = _geo_cache.get(ip)
+    if not ent: return None
+    ts, val = ent
+    if now - ts > GEO_CACHE_TTL:
+        _geo_cache.pop(ip, None)
+        return None
+    return val
+
+def _geo_cache_put(ip: str, val: Dict[str, Any]) -> None:
+    _geo_cache[ip] = (time.time(), val)
+
+def _is_public_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+        return not (addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local)
+    except Exception:
+        return False
+
+def _geo_lookup(ip: str) -> Dict[str, Any]:
+    """
+    Returns a dict with keys:
+    country_iso2, country_name, region, city, latitude, longitude, asn, isp
+    Falls back to empty/unknown fields on error. Never raises.
+    """
+    # Cache first
+    if not ip or not _is_public_ip(ip):
+        return {}
+    hit = _geo_cache_get(ip)
+    if hit is not None:
+        return hit
+
+    try:
+        r = requests.get(f"{GEO_URL}/lookup", params={"ip": ip}, timeout=GEO_TIMEOUT)
+        if r.ok:
+            data = r.json() or {}
+            # normalize fields
+            out = {
+                "country_iso2": (data.get("country_iso2") or "").upper(),
+                "country_name": data.get("country_name") or "",
+                "region":       data.get("region") or data.get("region_name") or "",
+                "city":         data.get("city") or "",
+                "latitude":     data.get("latitude"),
+                "longitude":    data.get("longitude"),
+                "asn":          data.get("asn") or data.get("as") or "",
+                "isp":          data.get("isp") or data.get("org") or "",
+            }
+            _geo_cache_put(ip, out)
+            return out
+    except Exception:
+        pass
+
+    return {}
+
+
 
 # -------------------- Security headers --------------------
 @app.after_request
@@ -245,7 +309,13 @@ def _visit_enrich_and_count():
         client_ip = request.headers.get("CF-Connecting-IP") \
                     or request.headers.get("X-Forwarded-For","").split(",")[0].strip() \
                     or request.remote_addr
-        country = (request.headers.get("CF-IPCountry") or "unknown").strip().upper() or "UNKNOWN"
+
+        # Prefer Cloudflare’s country for speed; we’ll still enrich from local geo for city/ASN/etc
+        cf_country = (request.headers.get("CF-IPCountry") or "").strip().upper()
+        geo = _geo_lookup(client_ip) if _is_public_ip(client_ip) else {}
+
+        # Choose ISO2 country code: geo > CF > UNKNOWN
+        country = (geo.get("country_iso2") or cf_country or "UNKNOWN").upper()
 
         ua_str = request.headers.get("User-Agent","")
         dev, os_fam, os_major, browser, browser_major = _parse_ua(ua_str)
@@ -257,6 +327,12 @@ def _visit_enrich_and_count():
             "method": request.method,
             "ip": client_ip,
             "country": country,
+            "city": geo.get("city") or "",
+            "region": geo.get("region") or "",
+            "asn": geo.get("asn") or "",
+            "isp": geo.get("isp") or "",
+            "lat": geo.get("latitude"),
+            "lon": geo.get("longitude"),
             "device": dev,
             "os": f"{os_fam} {os_major}",
             "browser": f"{browser} {browser_major}",
@@ -264,11 +340,13 @@ def _visit_enrich_and_count():
 
         # Prometheus counters (NO IPs in labels!)
         VISITS_TOTAL.inc()
-        VISITS_BY_COUNTRY.labels(country=country).inc()
+        if country != "UNKNOWN":
+            VISITS_BY_COUNTRY.labels(country=country).inc()
         VISITS_BY_UA.labels(
             device=dev, os=os_fam, os_major=os_major,
             browser=browser, browser_major=browser_major
         ).inc()
+
     except Exception:
         # never block requests due to telemetry
         pass
@@ -790,6 +868,8 @@ def fbref_vs_team_data(team):
         cur.execute("SELECT get_fbref_vs_team(%s)", (team,))
         return (cur.fetchall())
 
+
+
 # -------------------- Error Handlers --------------------
 @app.errorhandler(400)
 def bad_request(e):
@@ -807,6 +887,13 @@ def svc_unavailable(e):
 def unhandled(e):
     logger.exception("Unhandled error")
     return jsonify(error="internal_error"), 500
+
+@app.route("/debug/geo")
+def debug_geo():
+    ip = request.args.get("ip") or request.headers.get("CF-Connecting-IP") \
+         or request.headers.get("X-Forwarded-For","").split(",")[0].strip() \
+         or request.remote_addr
+    return jsonify({"ip": ip, "geo": _geo_lookup(ip)})
 
 # -------------------- Startup --------------------
 try:

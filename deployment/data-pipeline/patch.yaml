@@ -40,7 +40,7 @@ spec:
       containers:
         # --- Your ETL container ---
         - name: etl
-          image: ghcr.io/tamhid92/epl-etl:test
+          image: ghcr.io/tamhid92/epl-etl:patch
           imagePullPolicy: Always
           command: ["/bin/sh","-lc"]
           args:
