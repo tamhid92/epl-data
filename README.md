@@ -1,4 +1,5 @@
-# EPL Data — Football Analytics (Live at https://pl.tchowdhury.org)
+# EPL Data — Football Analytics 
+## (Live at https://pl.tchowdhury.org)
 
 End-to-end football analytics pipeline: **Understat & FBRef → ETL → PostgreSQL → Flask API → React dashboard**, deployed on **Kubernetes** with CI/CD, monitoring, and network policies.
 
@@ -94,7 +95,6 @@ ServiceMonitor (15s scrape interval) on `/metrics`.
 
 **Key points**
 - Both wait for Postgres before run
-- Env: `SEASON_ID=2025/2026`, `COMP_ID=EPL`, etc.
 - CronJob runs non-root; init job allows root where needed
 
 ---
@@ -103,13 +103,13 @@ ServiceMonitor (15s scrape interval) on `/metrics`.
 
 - Trigger: Git push/PR  
 - GitHub Actions:
-  - `frontend/**` → `ghcr.io/tamhid92/epl-frontend-react:dev`
-  - `backend/api/**` → `ghcr.io/tamhid92/epl-api:dev`
-  - `backend/data-pipeline/**` → `ghcr.io/tamhid92/epl-etl:latest`
+  - `frontend/**` → `ghcr.io/tamhid92/epl-frontend-react`
+  - `backend/api/**` → `ghcr.io/tamhid92/epl-api`
+  - `backend/data-pipeline/**` → `ghcr.io/tamhid92/epl-etl`
 - Images pushed to GHCR
 - Self-hosted runner dispatches Jenkins
 - Jenkins rollout:
-  - `kubectl set image` or Helm upgrade
+  - `kubectl set image` and `kubectl rollout`
   - Rollout status checks
 
 ---
@@ -133,25 +133,9 @@ ServiceMonitor (15s scrape interval) on `/metrics`.
 
 ---
 
-## Repository Structure
-
-```
-.
-├── frontend/                 # React dashboard
-├── backend/
-│   ├── api/                  # Flask API
-│   └── data-pipeline/        # ETL
-├── k8s/                      # Kubernetes manifests
-├── .github/workflows/        # GitHub Actions
-├── Jenkinsfile               # Deployment rollouts
-└── README.md
-```
-
----
-
 ## Notes
 
-- Data scraping is from Understat for personal/educational use.
+- Data scraping is from Understat and FBRef for personal/educational use.
 - Monitoring stack based on Prometheus, Grafana, Loki.
 
 ## License
