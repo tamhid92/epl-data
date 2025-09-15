@@ -39,7 +39,7 @@ jobs:
               - 'backend/data-pipeline/**'
 
   build-frontend:
-    name: Build frontend → ghcr.io/<owner>/epl-frontend-react:dev
+    name: Build frontend → ghcr.io/<owner>/epl-frontend-react:staging
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
@@ -67,7 +67,7 @@ jobs:
         with:
           images: ghcr.io/${{ steps.who.outputs.owner_lc }}/epl-frontend-react
           tags: |
-            type=raw,value=dev
+            type=raw,value=staging
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
 
@@ -87,7 +87,7 @@ jobs:
             VITE_API_TOKEN=${{ secrets.VITE_API_TOKEN }}
 
   build-api:
-    name: Build API → ghcr.io/<owner>/epl-api:dev
+    name: Build API → ghcr.io/<owner>/epl-api:staging
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
@@ -115,7 +115,7 @@ jobs:
         with:
           images: ghcr.io/${{ steps.who.outputs.owner_lc }}/epl-api
           tags: |
-            type=raw,value=dev
+            type=raw,value=staging
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
 
@@ -132,7 +132,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-etl:
-    name: Build ETL → ghcr.io/<owner>/epl-etl:latest
+    name: Build ETL → ghcr.io/<owner>/epl-etl:staging
     needs: changes
     if: needs.changes.outputs.etl == 'true'
     runs-on: ubuntu-latest
@@ -160,7 +160,7 @@ jobs:
         with:
           images: ghcr.io/${{ steps.who.outputs.owner_lc }}/epl-etl
           tags: |
-            type=raw,value=latest
+            type=raw,value=staging
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
 

@@ -518,6 +518,13 @@ def fixtures():
         cur.execute('SELECT * FROM fixtures ORDER BY id ASC LIMIT %s OFFSET %s;', (limit, offset))
         return jsonify_records(cur.fetchall())
 
+@app.route("/fixtures/<string:match_id>", methods=["GET"])
+def fixtures_match_id(match_id):
+    limit, offset = _pagination()
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute('SELECT * FROM fixtures WHERE id = %s LIMIT %s OFFSET %s;', (match_id, limit, offset))
+        return jsonify_records(cur.fetchall())
+
 @app.route("/fixtures/upcoming", methods=["GET"])
 def upcoming_fixtures():
     limit, offset = _pagination()
@@ -667,6 +674,36 @@ def league_leaders(stat):
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(f"""SELECT * FROM players ORDER BY "{stat}"::Decimal DESC LIMIT 5""")
         return jsonify_records(cur.fetchall())
+
+@app.route("/fbref/player/<string:player>", methods=["GET"])
+def fbref_player_data(player):
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT get_player_all_stats(%s)", (player,))
+        return (cur.fetchall())
+
+@app.route("/fbref/all_teams", methods=["GET"])
+def fbref_team_all_data():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT get_fbref_team_json_all()")
+        return (cur.fetchall())
+
+@app.route("/fbref/vs_all_teams", methods=["GET"])
+def fbref_vs_team_all_data():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT get_fbref_vs_team_json_all()")
+        return (cur.fetchall())
+
+@app.route("/fbref/team/<string:team>", methods=["GET"])
+def fbref_team_data(team):
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT get_fbref_team(%s)", (team,))
+        return (cur.fetchall())
+
+@app.route("/fbref/vs_team/<string:team>", methods=["GET"])
+def fbref_vs_team_data(team):
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT get_fbref_vs_team(%s)", (team,))
+        return (cur.fetchall())
 
 # -------------------- Error Handlers --------------------
 @app.errorhandler(400)

@@ -1,6 +1,11 @@
-psycopg2-binary
 ScraperFC
-SQLAlchemy
-requests
-beautifulsoup4
+selenium
 pandas
+beautifulsoup4
+lxml
+requests
+cloudscraper
+tqdm
+SQLAlchemy
+psycopg2-binary
+rapidfuzz

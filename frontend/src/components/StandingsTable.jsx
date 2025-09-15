@@ -2,41 +2,51 @@ import React, { useEffect, useMemo, useState } from "react";
 
 /**
  * Props:
- *  - endpoint: string (e.g. `${API_BASE}/standings`)
+ *  - rows?: Array<object>        // if provided, table renders from these rows (no fetch)
+ *  - endpoint?: string           // fallback URL to fetch if rows not provided
  *  - onOpenTeam?: (teamName: string) => void
  */
-export default function StandingsTable({ endpoint, onOpenTeam }) {
-  const [rows, setRows] = useState([]);
-  const [status, setStatus] = useState("idle");
+export default function StandingsTable({ rows: rowsProp, endpoint, onOpenTeam }) {
+  const controlled = typeof rowsProp !== "undefined";
+  const [rows, setRows] = useState(Array.isArray(rowsProp) ? rowsProp : []);
+  const [status, setStatus] = useState(controlled ? "ready" : "idle");
 
+  // Keep in sync when parent controls the data
   useEffect(() => {
+    if (controlled) {
+      setRows(Array.isArray(rowsProp) ? rowsProp : []);
+      setStatus("ready");
+    }
+  }, [controlled, rowsProp]);
+
+  // Only fetch if not controlled and endpoint is provided
+  useEffect(() => {
+    if (controlled || !endpoint) return;
     let cancelled = false;
     const ctrl = new AbortController();
-    async function load() {
+
+    (async () => {
       try {
         setStatus("loading");
-        const res = await fetch(endpoint,{ 
+        const res = await fetch(endpoint, {
           signal: ctrl.signal,
-          headers: {"X-API-TOKEN": import.meta.env.VITE_API_TOKEN },
+          headers: { "X-API-TOKEN": import.meta.env.VITE_API_TOKEN },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!cancelled) setRows(Array.isArray(data) ? data : []);
-        setStatus("idle");
+        if (!cancelled) setStatus("ready");
       } catch (err) {
         console.error("Failed to load standings:", err);
         if (!cancelled) setStatus("error");
       }
-    }
-    load();
-    return () => { 
-      cancelled = true;
-      ctrl.abort();
-     };
-  }, [endpoint]);
+    })();
+
+    return () => { cancelled = true; ctrl.abort(); };
+  }, [controlled, endpoint]);
 
   const table = useMemo(() => {
-    const normalized = rows.map((r) => {
+    const normalized = (rows || []).map((r) => {
       const MP  = Number(r.M)   || 0;
       const W   = Number(r.W)   || 0;
       const D   = Number(r.D)   || 0;
@@ -50,38 +60,27 @@ export default function StandingsTable({ endpoint, onOpenTeam }) {
     });
 
     normalized.sort((a, b) =>
-      b.Pts - a.Pts ||
-      b.GD  - a.GD  ||
-      b.GF  - a.GF
+      b.Pts - a.Pts || b.GD - a.GD || b.GF - a.GF
     );
 
     return normalized.map((r, i) => ({ Pos: i + 1, ...r }));
   }, [rows]);
 
-  // Row/pos styling by band
   function bandStyles(pos) {
-    // defaults
-    let row = "";
-    let border = "border-transparent";
-    let posText = "";
-
+    let row = "", border = "border-transparent", posText = "";
     if (pos >= 1 && pos <= 4) {
-      // UCL
       row = "bg-emerald-50 dark:bg-emerald-950/30";
       border = "border-emerald-400";
       posText = "text-emerald-700 dark:text-emerald-300";
     } else if (pos === 5) {
-      // Europa
       row = "bg-lime-50 dark:bg-lime-950/30";
       border = "border-lime-400";
       posText = "text-lime-700 dark:text-lime-300";
     } else if (pos >= 18) {
-      // Relegation
       row = "bg-rose-50 dark:bg-rose-950/30";
       border = "border-rose-400";
       posText = "text-rose-700 dark:text-rose-300";
     }
-
     return { row, border, posText };
   }
 
@@ -121,13 +120,8 @@ export default function StandingsTable({ endpoint, onOpenTeam }) {
           {table.map((r) => {
             const s = bandStyles(r.Pos);
             return (
-              <tr
-                key={r.Pos}
-                className={`${s.row} hover:bg-zinc-50/70 dark:hover:bg-zinc-900/50`}
-              >
-                <td className={`px-4 py-2 font-semibold tabular-nums border-l-4 ${s.border} ${s.posText}`}>
-                  {r.Pos}
-                </td>
+              <tr key={r.Pos} className={`${s.row} hover:bg-zinc-50/70 dark:hover:bg-zinc-900/50`}>
+                <td className={`px-4 py-2 font-semibold tabular-nums border-l-4 ${s.border} ${s.posText}`}>{r.Pos}</td>
                 <td className="px-4 py-2">
                   <button
                     onClick={() => onOpenTeam && onOpenTeam(r.Team)}
