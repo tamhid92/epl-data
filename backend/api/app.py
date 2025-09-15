@@ -16,6 +16,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 from typing import Optional
+from ua_parser import user_agent_parser
+from user_agents import parse as ua_parse
 
 # -------------------- Prometheus --------------------
 from prometheus_client import (
@@ -120,6 +122,22 @@ logger = logging.getLogger(__name__)
 def _is_public(path: str) -> bool:
     return path in PUBLIC_PATHS
 
+def _device_family(ua_str: str) -> str:
+    ua = ua_parse(ua_str or "")
+    if ua.is_bot:    return "Bot"
+    if ua.is_mobile: return "Mobile"
+    if ua.is_tablet: return "Tablet"
+    if ua.is_pc:     return "Desktop"
+    return "Other"
+
+def _parse_ua(ua_str: str):
+    p = user_agent_parser.Parse(ua_str or "")
+    browser = (p["user_agent"]["family"] or "unknown").lower()
+    browser_major = p["user_agent"]["major"] or "0"
+    os_fam = (p["os"]["family"] or "unknown").lower()
+    os_major = p["os"]["major"] or "0"
+    dev = _device_family(ua_str or "")
+    return dev, os_fam, os_major, browser, browser_major
 
 
 # -------------------- Security headers --------------------
@@ -173,6 +191,25 @@ DB_POOL_INUSE = Gauge(
     "Connections currently in use",
     registry=registry,
 )
+VISITS_TOTAL = Counter(
+    "web_visits_total",
+    "Total visits (all API hits counted)",
+    registry=registry,
+)
+
+VISITS_BY_COUNTRY = Counter(
+    "web_visits_by_country_total",
+    "Visits by country (from Cloudflare header if available)",
+    ["country"],
+    registry=registry,
+)
+
+VISITS_BY_UA = Counter(
+    "web_visits_by_ua_total",
+    "Visits by coarse UA buckets",
+    ["device", "os", "os_major", "browser", "browser_major"],
+    registry=registry,
+)
 
 def _endpoint_label():
     # use rule endpoint if available; fallback to path
@@ -200,6 +237,43 @@ def _start_timer_and_request_id():
     g.request_method = request.method
     INFLIGHT.inc()
 
+@app.before_request
+def _visit_enrich_and_count():
+    # Only if request made it past the token gate (public paths are fine too)
+    try:
+        # Real client IP & country via Cloudflare; safe fallbacks otherwise
+        client_ip = request.headers.get("CF-Connecting-IP") \
+                    or request.headers.get("X-Forwarded-For","").split(",")[0].strip() \
+                    or request.remote_addr
+        country = (request.headers.get("CF-IPCountry") or "unknown").strip().upper() or "UNKNOWN"
+
+        ua_str = request.headers.get("User-Agent","")
+        dev, os_fam, os_major, browser, browser_major = _parse_ua(ua_str)
+
+        # stash for logging after response
+        g._visit = {
+            "ts": int(time.time()),
+            "path": request.path,
+            "method": request.method,
+            "ip": client_ip,
+            "country": country,
+            "device": dev,
+            "os": f"{os_fam} {os_major}",
+            "browser": f"{browser} {browser_major}",
+        }
+
+        # Prometheus counters (NO IPs in labels!)
+        VISITS_TOTAL.inc()
+        VISITS_BY_COUNTRY.labels(country=country).inc()
+        VISITS_BY_UA.labels(
+            device=dev, os=os_fam, os_major=os_major,
+            browser=browser, browser_major=browser_major
+        ).inc()
+    except Exception:
+        # never block requests due to telemetry
+        pass
+
+
 @app.after_request
 def _record_metrics_and_log(resp):
     try:
@@ -214,6 +288,17 @@ def _record_metrics_and_log(resp):
         INFLIGHT.dec()
     # propagate request id
     resp.headers["X-Request-ID"] = g.request_id
+    try:
+        v = getattr(g, "_visit", None)
+        if v:
+            v = dict(v)  # copy
+            v["status"] = resp.status_code
+            v["event"] = "visit"
+            # Emit a clean JSON line alongside your structured logs.
+            # (We keep IP only in logs; never in Prometheus labels.)
+            print(json.dumps(v, ensure_ascii=False), flush=True)
+    except Exception:
+        pass
     return resp
 
 @app.route("/metrics")
