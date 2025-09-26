@@ -828,6 +828,32 @@ def team_data_conceded(team_stat):
         cur.execute(f'SELECT * FROM {table} ORDER BY 1 ASC LIMIT %s OFFSET %s', (limit, offset))
         return jsonify_records(cur.fetchall())
 
+@app.route("/fpl_predict", methods=["GET"])
+def fpl_predict():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(f"""
+                    SELECT * FROM predicted_next_gw where match_method != 'none'
+                    """)
+        return jsonify_records(cur.fetchall())
+
+@app.route("/fpl_data", methods=["GET"])
+def fpl_data():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(f"""
+                    SELECT * FROM fpl_elements_enriched
+                    WHERE match_method != 'none'
+                    """)
+        return jsonify_records(cur.fetchall())
+    
+@app.route("/fpl_data_unmatched", methods=["GET"])
+def fpl_data_unmatched():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(f"""
+                    SELECT * FROM fpl_elements_enriched
+                    WHERE match_method = 'none'
+                    """)
+        return jsonify_records(cur.fetchall())
+
 @app.route("/leaders/<string:stat>", methods=["GET"])
 def league_leaders(stat):
     if stat == 'xg':
@@ -842,6 +868,18 @@ def league_leaders(stat):
 def fbref_player_data(player):
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT get_player_all_stats(%s)", (player,))
+        return (cur.fetchall())
+    
+@app.route("/fbref/players", methods=["GET"])
+def fbref_players():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT get_all_players_stats()")
+        return (cur.fetchall())
+
+@app.route("/fpl_bootstrap", methods=["GET"])
+def fpl_bootstrap():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT fpl_bootstrap()")
         return (cur.fetchall())
 
 @app.route("/fbref/all_teams", methods=["GET"])
@@ -867,8 +905,6 @@ def fbref_vs_team_data(team):
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT get_fbref_vs_team(%s)", (team,))
         return (cur.fetchall())
-
-
 
 # -------------------- Error Handlers --------------------
 @app.errorhandler(400)

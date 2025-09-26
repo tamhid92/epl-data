@@ -1,0 +1,10 @@
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: curl-tester
+      namespace: epl-data
+    spec:
+      containers:
+      - name: curl-container
+        image: curlimages/curl:latest
+        command: ["sleep", "3600"]

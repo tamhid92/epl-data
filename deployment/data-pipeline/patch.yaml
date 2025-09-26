@@ -1,3 +1,4 @@
+# -------------------- ONE-TIME INIT JOB --------------------
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -38,14 +39,61 @@ spec:
               done
               echo "Postgres is ready."
       containers:
+        # --- Selenium sidecar ---
+        - name: selenium
+          image: selenium/standalone-chromium:latest
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 4444
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1200   # selenium image runs as seluser (UID 1200)
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+
         # --- Your ETL container ---
         - name: etl
-          image: ghcr.io/tamhid92/epl-etl:patch
+          image: ghcr.io/tamhid92/epl-etl:staging
           imagePullPolicy: Always
+          # Wait for Selenium, then run python with "init"
           command: ["/bin/sh","-lc"]
           args:
             - |
-              exec python /app/data_pipeline.py init
+              echo "Waiting for Selenium at http://localhost:4444/status ..."
+                  python - <<'PY'
+              import json, sys, time, urllib.request
+              url = "http://localhost:4444/status"
+              for _ in range(120):
+                  try:
+                      with urllib.request.urlopen(url, timeout=2) as r:
+                          data = json.load(r)
+                      ready = (data.get("value") or {}).get("ready")
+                      if ready is None:
+                          ready = data.get("ready")
+                      if ready:
+                          sys.exit(0)
+                  except Exception:
+                      pass
+                  time.sleep(2)
+              sys.exit(1)
+              PY
+                  exec python /app/data_pipeline.py update
           env:
             - name: DB_HOST
               value: "postgres"

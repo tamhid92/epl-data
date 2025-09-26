@@ -1,0 +1,10 @@
+pandas
+sqlalchemy
+requests
+unicodedata2
+rapidfuzz
+jellyfish
+numpy
+lightgbm
+scikit-learn
+shap
