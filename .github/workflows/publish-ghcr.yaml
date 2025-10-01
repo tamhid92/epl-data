@@ -1,4 +1,3 @@
-# .github/workflows/publish-ghcr.yaml
 name: Build & Publish images to GHCR
 
 on:

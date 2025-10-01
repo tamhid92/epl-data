@@ -1,0 +1,36 @@
+name: Trigger Jenkins Job to push Prediction Data to DB
+
+on:
+  workflow-dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, k8s]
+
+    steps:
+      - name: Trigger Jenkins
+        env: 
+          JENKINS_URL:   http://jenkins.jenkins.svc.cluster.local:8080
+          JENKINS_USER:  ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+          JENKINS_JOB: "upload_preds_to_db"
+        run: |
+          set -euo pipefail
+          # Try to get crumb (works whether CSRF is on or off)
+          CRUMB_JSON="$(curl -sf --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${JENKINS_URL}/crumbIssuer/api/json" || true)"
+          if [[ -n "$CRUMB_JSON" ]]; then
+            CRUMB_HEADER="Jenkins-Crumb:$(echo "$CRUMB_JSON" | jq -r .crumb)"
+            EXTRA="-H ${CRUMB_HEADER}"
+          else
+            EXTRA=""
+          fi
+
+          # Optionally pass which components changed as params to the job
+          curl -sS -X POST --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            ${EXTRA} \
+            "${JENKINS_URL}/job/${JENKINS_JOB}/buildWithParameters" \
+            --data-urlencode "frontend_changed=${{ needs.changes.outputs.frontend }}" \
+            --data-urlencode "api_changed=${{ needs.changes.outputs.api }}"
+
+          echo "Triggered Jenkins job: ${JENKINS_JOB}"
