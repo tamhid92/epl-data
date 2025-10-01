@@ -1,7 +1,7 @@
 name: Trigger Jenkins Job to push Prediction Data to DB
 
 on:
-  workflow-dispatch:
+  workflow_dispatch:
 
 jobs:
   build:
