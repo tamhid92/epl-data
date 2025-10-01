@@ -1,0 +1,128 @@
+podTemplate(
+  namespace: 'epl-data',
+  nodeSelector: 'kubernetes.io/hostname=k8-node1',
+  podRetention: onFailure(),
+  containers: [
+    containerTemplate(
+      name: 'python',
+      image: 'python:3.12-slim',
+      command: 'sleep', args: 'infinity', ttyEnabled: true
+    ),
+    containerTemplate(
+      name: 'psql',
+      image: 'postgres:16',
+      command: 'sleep', args: 'infinity', ttyEnabled: true
+    ),
+    containerTemplate(
+      name: 'kubectl',
+      image: 'bitnami/kubectl:1.32',
+      command: 'sleep', args: 'infinity', ttyEnabled: true
+    ),
+  ],
+  volumes: [
+    persistentVolumeClaim(claimName: 'fpl', mountPath: '/mnt/fpl', readOnly: false)
+  ],
+
+  yaml: """
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+    - name: python
+      env:
+        - name: PIP_NO_CACHE_DIR
+          value: "1"
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secrets
+              key: POSTGRES_PASSWORD
+    - name: psql
+      env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secrets
+              key: POSTGRES_PASSWORD
+"""
+) {
+  node(POD_LABEL) {
+    def GIT_URL     = 'https://github.com/tamhid92/epl-data.git'
+    def GIT_BRANCH  = 'main'
+    def LOADER_PATH = 'fpl/upload_to_db.py'
+    def INPUT_DIR   = '/mnt/fpl'
+    def DB_HOST     = 'postgres'
+    def DB_PORT     = '5432'
+    def DB_NAME     = 'epl'
+    def DB_USER     = 'postgres'
+
+    stage('Checkout loader repo') {
+      git branch: GIT_BRANCH, url: GIT_URL
+    }
+
+    stage('Verify CSVs on PVC') {
+      container('kubectl') {
+        sh """
+          set -euo pipefail
+          echo "Listing ${INPUT_DIR} ..."
+          ls -lah ${INPUT_DIR} || true
+          test -n "$(ls -1 ${INPUT_DIR}/*.csv 2>/dev/null || true)" || { echo "No CSV files found in ${INPUT_DIR}"; exit 2; }
+        """
+      }
+    }
+
+    stage('Python venv & deps') {
+      container('python') {
+        sh """
+          set -euo pipefail
+          python -V
+          apt-get update -y && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+          python -m venv .venv
+          . .venv/bin/activate
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pandas sqlalchemy psycopg2-binary pyarrow
+          fi
+        """
+      }
+    }
+
+    stage('Load CSV -> Postgres') {
+      container('python') {
+        withEnv([
+          "INPUT_DIR=${INPUT_DIR}",
+          "DB_HOST=${DB_HOST}",
+          "DB_PORT=${DB_PORT}",
+          "DB_NAME=${DB_NAME}",
+          "DB_USER=${DB_USER}",
+          "DB_URL=postgresql+psycopg2://${DB_USER}:\${PGPASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+        ]) {
+          sh """
+            set -euo pipefail
+            . .venv/bin/activate
+            echo "DB_URL=\${DB_URL}"
+            python ${LOADER_PATH}
+          """
+        }
+      }
+    }
+
+    stage('Post-load sanity (optional)') {
+      container('psql') {
+        sh """
+          set -euo pipefail
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -c "SELECT NOW() as ts;"
+          -- Example: verify rows landed (adjust table/filters)
+          -- psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -c "SELECT COUNT(*) FROM fpl_predictions;"
+        """
+      }
+    }
+  }
+}
