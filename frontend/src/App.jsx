@@ -2104,7 +2104,11 @@ export default function App() {
                   <div>
                     <h2 className="text-base font-semibold">FPL Predictions</h2>
                     <p className="mt-1 max-w-3xl text-sm text-zinc-600 dark:text-zinc-300">
-                      Basic gameweek data with a next-GW points predictor. It trains on historical and current data and uses a LightGBM model to estimate how many points a player might score in the upcoming gameweek.
+                      The FPL Predictions tool goes beyond basic gameweek data by training on both historical and current player statistics. 
+                      It leverages four different machine learning models — <strong>XGBoost</strong>, <strong>LightGBM</strong>, 
+                      <strong>PyTorch MLP</strong>, and <strong>PyTorch LSTM</strong> — to estimate how many points a player might score 
+                      in the upcoming gameweek. You can compare results across these models to see how different approaches interpret 
+                      the data, giving you multiple perspectives on potential player performance.
                     </p>
                   </div>
                   <div className="shrink-0">

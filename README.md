@@ -30,7 +30,33 @@ End‑to‑end football analytics pipeline: **Understat and FBRef → ETL → Po
 ![Application Architecture](./screenshots/infra-diagram.png)
 
 ---
+## New Feature — FPL Predictions
 
+I've added a **Fantasy Premier League (FPL) predictions module** to the pipeline.  
+This feature trains on **over 150,000 rows** of historical + current player data with **30+ engineered parameters** to predict how many points a player might score in the **next gameweek**.
+
+### Models
+The system trains and validates **four different machine learning models**, letting you compare their results:
+
+- **LightGBM** — gradient boosting on decision trees, efficient for large tabular datasets and useful for modeling complex interactions between features such as player form, fixtures, and team strength.  
+- **XGBoost** — another gradient boosting algorithm, often delivering strong predictive performance in structured data competitions; in the FPL context, it helps capture non-linear relationships between player stats and expected points.  
+- **PyTorch MLP (Multi-Layer Perceptron)** — a deep learning feed-forward neural network, which can model complex non-linearities in FPL data beyond gradient boosting approaches.  
+- **PyTorch LSTM (Long Short-Term Memory)** — a recurrent neural network suited for sequential/time-series data, making it valuable for learning from player and team trends across multiple gameweeks.
+
+These models provide **different perspectives on FPL player performance**, and results can be compared side-by-side to evaluate predictive confidence.
+
+### Deployment Flow
+Given the computational intensity of training these models, the pipeline **offloads training to a more powerful workstation**:
+
+1. **Training & Validation**: heavy compute node trains/validates the models on historical/current data.  
+2. **Artifact Storage**: trained model outputs are uploaded to an **SFTP storage pod** deployed inside the Kubernetes cluster.  
+3. **Automation Trigger**: the upload triggers a **GitHub Action**, which in turn triggers a **Jenkins job**.  
+4. **Database Update**: Jenkins retrieves artifacts from the SFTP pod and loads them into **PostgreSQL**.  
+5. **API Exposure**: the predictions are then served via the existing **Flask API**, making them accessible to the **React dashboard**.
+
+This design ensures that **resource-intensive ML workloads** run on hardware suited for training, while the cluster remains optimized for **serving results** efficiently and reliably.
+
+---
 ## Frontend
 
 **Component**: `epl-react` (Deployment, 2 replicas)  
