@@ -1,0 +1,1315 @@
+import React, { useEffect, useMemo, useState } from "react";
+
+/* ------------ small UI helpers ------------ */
+const num = (v) => (Number.isFinite(+v) ? +v : 0);
+const round1 = (v) => (Number.isFinite(+v) ? Math.round(v * 10) / 10 : 0);
+const round0 = (v) => (Number.isFinite(+v) ? Math.round(v) : 0);
+const logoUrl = (team) => `/logos/${encodeURIComponent(team || "_default")}.png`;
+
+function Badge({ children, tone = "zinc" }) {
+  const map = {
+    zinc: "bg-zinc-100 text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200",
+    green: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200",
+    blue: "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200",
+    amber: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200",
+    red: "bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-200",
+    violet: "bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-200",
+    indigo: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-200",
+    slate: "bg-slate-100 text-slate-800 dark:bg-slate-900/50 dark:text-slate-200",
+  }[tone] || "";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${map}`}>
+      {children}
+    </span>
+  );
+}
+const diffTone = (d) => (d <= 2 ? "green" : d === 3 ? "amber" : "red");
+const chipsFromTopFactors = (str) =>
+  (str ? String(str).split(";").map((s) => s.trim()).filter(Boolean).slice(0, 8) : []);
+
+function inferVenue(explanation) {
+  const ex = String(explanation || "");
+  if (/away/i.test(ex)) return "Away";
+  if (/home/i.test(ex)) return "Home";
+  return null;
+}
+const getVenue = (r) => {
+  if (typeof r?.was_home === "boolean") return r.was_home ? "HOME" : "AWAY";
+  if (typeof r?.is_home === "boolean") return r.is_home ? "HOME" : "AWAY";
+  if (typeof r?.home_away === "string") return r.home_away.toUpperCase() === "H" ? "HOME" : "AWAY";
+  if (typeof r?.venue === "string") {
+    if (/home/i.test(r.venue)) return "HOME";
+    if (/away/i.test(r.venue)) return "AWAY";
+  }
+  return null;
+};
+
+const venuePillClass = (v) =>
+  v === "HOME"
+    ? "bg-emerald-600 text-white"
+    : "bg-indigo-600 text-white";
+
+function MiniStat({ label, value, sub, tone = "slate" }) {
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mb-1 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">{label}</div>
+      <div className="flex items-center gap-2">
+        <div className="text-base font-semibold">{value}</div>
+        {sub ? <Badge tone={tone}>{sub}</Badge> : null}
+      </div>
+    </div>
+  );
+}
+
+const MODEL_OPTIONS = [
+  { key: "lgb",  label: "LightGBM" },
+  { key: "xgb",  label: "XGBoost" },
+  { key: "lstm", label: "PyTorch LSTM" },
+  { key: "mlp",  label: "PyTorch MLP" },
+];
+
+const MODEL_DESC = {
+  lgb:  "Fast gradient boosting trees tuned for structured football stats. Excels at capturing non-linear relationships in engineered FPL features like ICT Index, fixture difficulty, and rolling form, making it strong for general point prediction across positions.",
+  xgb:  "Another boosting algorithm similar to LightGBM but with heavier regularization controls. Particularly effective for avoiding overfitting on rare outcomes (e.g., penalty saves or red cards), giving more stable week-to-week player projections.",
+  lstm: "Sequence model that processes each player’s timeline of gameweeks, learning momentum and fatigue effects. Useful for capturing streaks of form (hot hands, poor runs) and how recent performances impact upcoming fixtures.",
+  mlp:  "A feed-forward neural net that ingests the full feature set at once. Good at combining diverse signals like opponent strength, player role, and creative/defensive stats, while being flexible enough to model subtle feature interactions missed by tree methods.",
+};
+
+export default function PredictionsPage({ apiBase = "/api", onOpenPlayer }) {
+  const BOOT_URL =
+    (import.meta.env?.VITE_FPL_BOOTSTRAP_URL && String(import.meta.env.VITE_FPL_BOOTSTRAP_URL)) ||
+    `${apiBase.replace(/\/$/, "")}/fpl_bootstrap`;
+
+  /* ---------- data ---------- */
+  const [bootLoading, setBootLoading] = useState(false);
+  const [bootErr, setBootErr] = useState(null);
+  const [boot, setBoot] = useState(null); // shape: { elements, teams, events, ... }
+
+  const [predLoading, setPredLoading] = useState(false);
+  const [predErr, setPredErr] = useState(null);
+  const [predRows, setPredRows] = useState([]);
+
+  // model selection state
+  const [model, setModel] = useState("lgb"); // default
+  const [modelMae, setModelMae] = useState(null);
+
+  // filters
+  const [q, setQ] = useState("");
+  const [team, setTeam] = useState("");
+  const [pos, setPos] = useState("");
+  const [limit, setLimit] = useState(100);
+
+  /* ---------- fetch bootstrap once ---------- */
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        setBootLoading(true);
+        setBootErr(null);
+        const headers = {};
+        const token = import.meta.env?.VITE_API_TOKEN;
+        if (token) headers["X-API-TOKEN"] = token;
+
+        const res = await fetch(BOOT_URL, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+
+        // your local endpoint wraps it as [{ fpl_bootstrap: { ... } }]
+        const payload =
+          Array.isArray(json) && json[0] && json[0].fpl_bootstrap ? json[0].fpl_bootstrap : json;
+
+        if (!ignore) setBoot(payload || null);
+      } catch (e) {
+        if (!ignore) setBootErr(String(e));
+      } finally {
+        if (!ignore) setBootLoading(false);
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [BOOT_URL]);
+
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        setPredLoading(true);
+        setPredErr(null);
+        const headers = {};
+        const token = import.meta.env?.VITE_API_TOKEN;
+        if (token) headers["X-API-TOKEN"] = token;
+
+        // Route through your proxy, same as other endpoints
+        const base = apiBase.replace(/\/$/, "");
+        const url = `${base}/fpl_predict_${model}`;
+        const res = await fetch(url, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const rows = Array.isArray(data) ? data : [];
+        const mae = rows.length && rows[0]?.validation_mae != null ? Number(rows[0].validation_mae) : null;
+
+        if (!ignore) {
+          setPredRows(rows);
+          setModelMae(mae);
+        }
+      } catch (e) {
+        if (!ignore) {
+          setPredErr(String(e));
+          setPredRows([]);
+          setModelMae(null);
+        }
+      } finally {
+        if (!ignore) setPredLoading(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [apiBase, model]);
+
+  /* ---------- indices & helpers from bootstrap ---------- */
+  const elements = boot?.elements || [];
+  const teamsList = boot?.teams || [];
+  const events = boot?.events || [];
+  
+  const diffCardBg = (d) => {
+    // 1–5 distinct backgrounds (light + dark)
+    switch (Number(d)) {
+      case 1: return "bg-emerald-200 dark:bg-emerald-900/50";
+      case 2: return "bg-teal-200 dark:bg-teal-900/50";
+      case 3: return "bg-amber-200 dark:bg-amber-900/50";
+      case 4: return "bg-orange-200 dark:bg-orange-900/50";
+      case 5: return "bg-rose-300 dark:bg-rose-900/60";
+      default: return "bg-zinc-200 dark:bg-zinc-800";
+    }
+  };
+
+  const elementById = useMemo(() => {
+    const m = new Map();
+    for (const e of elements) m.set(Number(e.id), e);
+    return m;
+  }, [elements]);
+
+  const elementByUnderstat = useMemo(() => {
+    const m = new Map();
+    for (const e of elements) if (e.understat_id != null) m.set(String(e.understat_id), e);
+    return m;
+  }, [elements]);
+
+  const elementByFbref = useMemo(() => {
+    const m = new Map();
+    for (const e of elements) if (e.fbref_id != null) m.set(String(e.fbref_id), e);
+    return m;
+  }, [elements]);
+
+  const elementByNameTeam = useMemo(() => {
+    const m = new Map();
+    for (const e of elements) {
+      const key = `${String(e.player_name_normalized || e.web_name || `${e.first_name} ${e.second_name}`).trim().toLowerCase()}__${String(e.canonical_team_name || e.team_norm || e.team).trim().toLowerCase()}`;
+      if (!m.has(key)) m.set(key, e);
+    }
+    return m;
+  }, [elements]);
+
+  const findElementForPrediction = (r) => {
+    // 1) direct element id
+    if (r.element != null && elementById.has(Number(r.element))) return elementById.get(Number(r.element));
+    // 2) understat mapping
+    if (r.understat_id != null && elementByUnderstat.has(String(r.understat_id)))
+      return elementByUnderstat.get(String(r.understat_id));
+    // 3) fbref mapping
+    if (r.fbref_id != null && elementByFbref.has(String(r.fbref_id))) return elementByFbref.get(String(r.fbref_id));
+    // 4) name + team fallback
+    const nm = String(r.matched_player_name || r.name || "").trim().toLowerCase();
+    const tm = String(r.matched_team_name || r.matched_team_from_catalog || r.canonical_team_name || r.team || "").trim().toLowerCase();
+    if (nm && tm) {
+      const key = `${nm}__${tm}`;
+      if (elementByNameTeam.has(key)) return elementByNameTeam.get(key);
+    }
+    return null;
+  };
+
+  const teams = useMemo(() => {
+    const s = new Set();
+    predRows.forEach((r) =>
+      (r.matched_team_name || r.canonical_team_name || r.team) &&
+      s.add(r.matched_team_name || r.canonical_team_name || r.team)
+    );
+    return ["", ...Array.from(s).sort((a, b) => a.localeCompare(b))];
+  }, [predRows]);
+
+  const positions = ["", "GK", "DEF", "MID", "FWD"];
+
+  /* ---------- gameweek + quick stats ---------- */
+  const currentEvent = useMemo(() => {
+    if (!events?.length) return null;
+    return (
+      events.find((e) => e.is_current) ||
+      events.find((e) => e.is_next) ||
+      [...events].reverse().find((e) => e.finished) ||
+      events[0]
+    );
+  }, [events]);
+
+  const mostCaptained = useMemo(() => {
+    const id = currentEvent?.most_captained;
+    return id != null ? elementById.get(Number(id)) : null;
+  }, [currentEvent, elementById]);
+
+  const mostSelectedOverall = useMemo(() => {
+    if (!elements?.length) return null;
+    return [...elements].sort(
+      (a, b) => parseFloat(b.selected_by_percent || 0) - parseFloat(a.selected_by_percent || 0)
+    )[0];
+  }, [elements]);
+
+  const highestForm = useMemo(() => {
+    if (!elements?.length) return null;
+    return [...elements].sort((a, b) => parseFloat(b.form || 0) - parseFloat(a.form || 0))[0];
+  }, [elements]);
+
+  const unavailableCount = useMemo(() => {
+    if (!elements?.length) return 0;
+    // FPL status: 'a' available; others often unavailable/doubtful
+    return elements.filter((e) => String(e.status || "").toLowerCase() !== "a").length;
+  }, [elements]);
+
+  const topPerformersGW = useMemo(() => {
+    if (!elements?.length) return [];
+    const arr = elements.filter((e) => num(e.event_points) > 0);
+    return arr.sort((a, b) => num(b.event_points) - num(a.event_points)).slice(0, 8);
+  }, [elements]);
+
+  const mostInGW = useMemo(() => {
+    if (!elements?.length) return [];
+    return [...elements].sort((a, b) => num(b.transfers_in_event) - num(a.transfers_in_event)).slice(0, 8);
+  }, [elements]);
+
+  const mostOutGW = useMemo(() => {
+    if (!elements?.length) return [];
+    return [...elements].sort((a, b) => num(b.transfers_out_event) - num(a.transfers_out_event)).slice(0, 8);
+  }, [elements]);
+
+  // === Compute best squad when data is ready ===
+  const teamLimit = Number(boot?.game_settings?.team_limit ?? 3);
+  const bestSquad = useMemo(() => {
+    if (!boot || !predRows?.length) return null;
+    return buildBestSquad({
+      predRows,
+      elements: boot.elements || [],
+      elementTypes: boot.element_types || [],
+      teams: boot.teams || [],
+      teamLimit,
+      budget: 100.0,
+    });
+  }, [boot, predRows, teamLimit]);
+
+  /* ---------- predictions table filters ---------- */
+  const filtered = useMemo(() => {
+    const qlc = q.trim().toLowerCase();
+    const pickTeam = team.trim();
+    const pickPos = pos.trim();
+    return predRows
+      .filter((r) => (qlc ? (String(r.matched_player_name || r.name || "").toLowerCase().includes(qlc)) : true))
+      .filter((r) => (pickTeam ? (r.matched_team_name || r.canonical_team_name || r.team) === pickTeam : true))
+      .filter((r) => (pickPos ? r.position === pickPos : true))
+      .sort((a, b) => num(b.predicted_total_points) - num(a.predicted_total_points))
+      .slice(0, Math.max(1, limit));
+  }, [predRows, q, team, pos, limit]);
+
+  const maxPts = useMemo(
+    () => Math.max(0, ...filtered.map((r) => num(r.predicted_total_points))),
+    [filtered]
+  );
+  
+  /* ============================== Optimizer ============================== */
+
+  /* ===== Best-squad builder (budget, quotas, team limit) ===== */
+  function buildBestSquad({
+    predRows,
+    elements,
+    elementTypes,
+    teams,
+    teamLimit = 3,
+    budget = 100.0,
+  }) {
+    if (!Array.isArray(predRows) || !predRows.length || !Array.isArray(elements) || !elements.length) {
+      return null;
+    }
+
+    // ---- element lookups ----
+    const byId = new Map(elements.map(e => [Number(e.id), e]));
+    const byUnderstat = new Map(elements.filter(e => e.understat_id != null).map(e => [String(e.understat_id), e]));
+    const byFbref = new Map(elements.filter(e => e.fbref_id != null).map(e => [String(e.fbref_id), e]));
+
+    // map element_type id -> short position (GK/DEF/MID/FWD)
+    const typeById = (() => {
+      const m = new Map();
+      for (const t of (elementTypes || [])) {
+        // prefer normalized fields if you added them locally
+        const short =
+          t.singular_name_short?.toUpperCase?.() ||
+          t.short_singular_name?.toUpperCase?.() ||
+          t.singular_name?.toUpperCase?.();
+        // normalise to our four buckets
+        let pos = short;
+        if (short === "GKP" || short === "GK") pos = "GK";
+        if (short === "DEF") pos = "DEF";
+        if (short === "MID") pos = "MID";
+        if (short === "FWD" || short === "FW") pos = "FWD";
+        m.set(Number(t.id), pos);
+      }
+      return m;
+    })();
+
+    // squad quotas from FPL rules (fallbacks if not found)
+    const quotas = {
+      GK: elementTypes?.find(t => typeById.get(t.id) === "GK")?.squad_select ?? 2,
+      DEF: elementTypes?.find(t => typeById.get(t.id) === "DEF")?.squad_select ?? 5,
+      MID: elementTypes?.find(t => typeById.get(t.id) === "MID")?.squad_select ?? 5,
+      FWD: elementTypes?.find(t => typeById.get(t.id) === "FWD")?.squad_select ?? 3,
+    };
+    const elevenMinMax = {
+      DEF: {
+        min: elementTypes?.find(t => typeById.get(t.id) === "DEF")?.squad_min_play ?? 3,
+        max: elementTypes?.find(t => typeById.get(t.id) === "DEF")?.squad_max_play ?? 5,
+      },
+      MID: {
+        min: elementTypes?.find(t => typeById.get(t.id) === "MID")?.squad_min_play ?? 3,
+        max: elementTypes?.find(t => typeById.get(t.id) === "MID")?.squad_max_play ?? 5,
+      },
+      FWD: {
+        min: elementTypes?.find(t => typeById.get(t.id) === "FWD")?.squad_min_play ?? 1,
+        max: elementTypes?.find(t => typeById.get(t.id) === "FWD")?.squad_max_play ?? 3,
+      },
+    };
+
+    // Try to locate the matching FPL element for each prediction row
+    function matchElement(r) {
+      if (r.element != null && byId.has(Number(r.element))) return byId.get(Number(r.element));
+      if (r.understat_id != null && byUnderstat.has(String(r.understat_id))) return byUnderstat.get(String(r.understat_id));
+      if (r.fbref_id != null && byFbref.has(String(r.fbref_id))) return byFbref.get(String(r.fbref_id));
+      // fallback by normalized (name+team) if present in your bootstrap
+      const nm = String(r.matched_player_name || r.name || "").trim().toLowerCase();
+      const tm = String(r.matched_team_name || r.canonical_team_name || r.team || "").trim().toLowerCase();
+      if (!nm || !tm) return null;
+      // cheap O(n) fallback
+      return elements.find(e =>
+        String(e.player_name_normalized || e.web_name || `${e.first_name} ${e.second_name}`)
+          .trim().toLowerCase() === nm &&
+        String(e.canonical_team_name || e.team_norm || e.team_name || "")
+          .trim().toLowerCase() === tm
+      ) || null;
+    }
+
+    // Build candidate list with price/pos/team
+    const candidates = [];
+    for (const r of predRows) {
+      const e = matchElement(r);
+      if (!e) continue;
+      const price = Number(e.now_cost) / 10;           // e.g. 56 -> £5.6
+      const pos = r.position || typeById.get(Number(e.element_type));
+      if (!price || !pos || !["GK", "DEF", "MID", "FWD"].includes(pos)) continue;
+
+      const points = Number(r.predicted_total_points) || 0;
+      if (points <= 0) continue;
+
+      candidates.push({
+        key: String(r.understat_id ?? r.element ?? r.fbref_id ?? `${e.id}-${e.web_name}`),
+        name: r.matched_player_name || r.name || e.web_name,
+        teamName: r.matched_team_name || r.canonical_team_name || r.team || (e.canonical_team_name || e.team_norm || ""),
+        teamId: Number(e.team) || 0,
+        elementId: Number(e.id) || null,
+        pos,
+        price,
+        points,
+      });
+    }
+    if (!candidates.length) return null;
+
+    // Split by position and pre-sort by value + raw
+    const byPos = { GK: [], DEF: [], MID: [], FWD: [] };
+    for (const c of candidates) {
+      c.vpm = c.price > 0 ? c.points / c.price : 0; // value per million
+      byPos[c.pos].push(c);
+    }
+    for (const k of Object.keys(byPos)) {
+      byPos[k].sort((a, b) => b.vpm - a.vpm || b.points - a.points);
+    }
+
+    // Precompute cheapest feasible remaining cost per position to keep greedy safe
+    const cheapestSum = (arr, k) =>
+      arr.slice().sort((a, b) => a.price - b.price).slice(0, k).reduce((s, x) => s + x.price, 0);
+
+    const need = { GK: quotas.GK, DEF: quotas.DEF, MID: quotas.MID, FWD: quotas.FWD };
+
+    const teamCount = new Map(); // teamId -> #picked
+    const selected = [];
+
+    const order = ["GK", "FWD", "DEF", "MID"]; // scarcity-ish order; tweakable
+
+    function stillNeededCost(pos, nLeft, skipSet) {
+      if (nLeft <= 0) return 0;
+      const pool = byPos[pos].filter(x => !skipSet.has(x.key));
+      return cheapestSum(pool, nLeft);
+    }
+
+    // Greedy fill with feasibility check & team limit
+    for (const pos of order) {
+      const pool = byPos[pos];
+      const must = need[pos];
+      const used = new Set(selected.map(s => s.key));
+
+      let taken = 0;
+      for (const cand of pool) {
+        if (taken >= must) break;
+        if (used.has(cand.key)) continue;
+        const tcnt = teamCount.get(cand.teamId) || 0;
+        if (tcnt >= teamLimit) continue;
+
+        // feasibility for remaining after this pick
+        const skip = new Set([...used, cand.key]);
+        let remBudget = budget - selected.reduce((s, x) => s + x.price, 0) - cand.price;
+
+        // minimal future cost lower bound
+        let futureMin = 0;
+        for (const p2 of order) {
+          const left = (p2 === pos) ? (need[p2] - (taken + 1)) : (need[p2] - (p2 === pos ? taken : selected.filter(s => s.pos === p2).length));
+          const l = Math.max(0, left);
+          futureMin += stillNeededCost(p2, l, skip);
+        }
+        if (remBudget >= futureMin) {
+          selected.push(cand);
+          teamCount.set(cand.teamId, tcnt + 1);
+          taken++;
+        }
+      }
+    }
+
+    // If still short (budget or team limit blocked), fallback: fill cheapest
+    for (const pos of order) {
+      while (selected.filter(s => s.pos === pos).length < need[pos]) {
+        const used = new Set(selected.map(s => s.key));
+        const pool = byPos[pos]
+          .filter(c => !used.has(c.key))
+          .filter(c => (teamCount.get(c.teamId) || 0) < teamLimit)
+          .sort((a, b) => a.price - b.price || b.points - a.points);
+        if (!pool.length) break;
+        // take cheapest that preserves feasibility
+        let picked = null;
+        for (const cand of pool) {
+          const skip = new Set([...used, cand.key]);
+          const priceSoFar = selected.reduce((s, x) => s + x.price, 0);
+          const remBudget = budget - priceSoFar - cand.price;
+          let futureMin = 0;
+          for (const p2 of order) {
+            const left = Math.max(0, need[p2] - (selected.filter(s => s.pos === p2).length + (p2 === pos ? 1 : 0)));
+            futureMin += stillNeededCost(p2, left, skip);
+          }
+          if (remBudget >= futureMin) { picked = cand; break; }
+        }
+        if (!picked) break;
+        selected.push(picked);
+        teamCount.set(picked.teamId, (teamCount.get(picked.teamId) || 0) + 1);
+      }
+    }
+
+    // If we blew the budget, perform “repair”: replace most expensive picks with cheaper alternatives
+    function totals(arr) {
+      return {
+        cost: arr.reduce((s, x) => s + x.price, 0),
+        points: arr.reduce((s, x) => s + x.points, 0),
+      };
+    }
+    let { cost } = totals(selected);
+    if (cost > budget) {
+      // try per-position cheapest swap first
+      for (const pos of order) {
+        const have = selected.filter(s => s.pos === pos).sort((a, b) => b.price - a.price);
+        const usedKeys = new Set(selected.map(s => s.key));
+        for (const victim of have) {
+          const pool = byPos[pos]
+            .filter(c => !usedKeys.has(c.key))
+            .filter(c => (teamCount.get(c.teamId) || 0) < teamLimit)
+            .sort((a, b) => a.price - b.price || b.points - a.points);
+          if (!pool.length) continue;
+          const swap = pool.find(c => c.price < victim.price);
+          if (swap) {
+            // apply swap
+            selected.splice(selected.indexOf(victim), 1, swap);
+            usedKeys.delete(victim.key); usedKeys.add(swap.key);
+            teamCount.set(victim.teamId, (teamCount.get(victim.teamId) || 1) - 1);
+            teamCount.set(swap.teamId, (teamCount.get(swap.teamId) || 0) + 1);
+            cost = totals(selected).cost;
+            if (cost <= budget) break;
+          }
+        }
+        if (cost <= budget) break;
+      }
+    }
+
+    // Final safety: if still > budget, drop marginal value and refill cheapest
+    if (totals(selected).cost > budget) {
+      // rank by (points per price) decreasing to protect best value
+      selected.sort((a, b) => (a.vpm - b.vpm));
+      while (totals(selected).cost > budget) {
+        const kick = selected.shift(); // remove weakest value
+        teamCount.set(kick.teamId, Math.max(0, (teamCount.get(kick.teamId) || 1) - 1));
+        // refill same position cheapest feasible
+        const used = new Set(selected.map(s => s.key));
+        const pool = byPos[kick.pos]
+          .filter(c => !used.has(c.key))
+          .filter(c => (teamCount.get(c.teamId) || 0) < teamLimit)
+          .sort((a, b) => a.price - b.price || b.points - a.points);
+        if (!pool.length) break;
+        const priceSoFar = selected.reduce((s, x) => s + x.price, 0);
+        for (const cand of pool) {
+          if (priceSoFar + cand.price <= budget) {
+            selected.push(cand);
+            teamCount.set(cand.teamId, (teamCount.get(cand.teamId) || 0) + 1);
+            break;
+          }
+        }
+        // resort weakest value at front for potential next iteration
+        selected.sort((a, b) => (a.vpm - b.vpm));
+      }
+    }
+
+    // Build best XI from the 15 (respect min/max play)
+    const gks = selected.filter(x => x.pos === "GK").sort((a, b) => b.points - a.points);
+    const defs = selected.filter(x => x.pos === "DEF").sort((a, b) => b.points - a.points);
+    const mids = selected.filter(x => x.pos === "MID").sort((a, b) => b.points - a.points);
+    const fwds = selected.filter(x => x.pos === "FWD").sort((a, b) => b.points - a.points);
+
+    const combos = [];
+    for (let d = elevenMinMax.DEF.min; d <= elevenMinMax.DEF.max; d++) {
+      for (let m = elevenMinMax.MID.min; m <= elevenMinMax.MID.max; m++) {
+        for (let f = elevenMinMax.FWD.min; f <= elevenMinMax.FWD.max; f++) {
+          if (d + m + f === 10) combos.push({ d, m, f });
+        }
+      }
+    }
+    let bestXI = null;
+    for (const c of combos) {
+      if (defs.length < c.d || mids.length < c.m || fwds.length < c.f || gks.length < 1) continue;
+      const xi = [gks[0], ...defs.slice(0, c.d), ...mids.slice(0, c.m), ...fwds.slice(0, c.f)];
+      const pts = xi.reduce((s, x) => s + x.points, 0);
+      if (!bestXI || pts > bestXI.points) {
+        bestXI = { d: c.d, m: c.m, f: c.f, xi, points: pts };
+      }
+    }
+
+    const totalsAll = totals(selected);
+    // bench = remaining 4 (GK2 + 3 lowest outfielders not in XI)
+    const xiKeys = new Set((bestXI?.xi || []).map(p => p.key));
+    const benchPool = selected.filter(p => !xiKeys.has(p.key));
+    const bench = benchPool.sort((a, b) => a.pos === "GK" ? -1 : (a.points - b.points)).slice(0, 4);
+
+    return {
+      selected: selected.sort((a, b) => {
+        const ord = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
+        if (a.pos !== b.pos) return ord[a.pos] - ord[b.pos];
+        return b.points - a.points;
+      }),
+      totals: totalsAll,
+      bestXI,
+      bench,
+      quotas,
+    };
+  }
+
+  /* ===== Tiny presentational card ===== */
+  function PlayerCard({ p, onOpenPlayer }) {
+    const vpm = p.price ? (p.points / p.price) : 0;
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenPlayer?.(p.teamName, String(p.elementId ?? p.key))}
+        className="group relative w-36 rounded-xl border border-white/30 bg-white/10 p-2 text-left shadow-md backdrop-blur transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 dark:border-white/20"
+        title={`${p.name} (${p.pos})`}
+      >
+        <div className="absolute -top-2 -left-2 rounded-full bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+          {p.pos}
+        </div>
+        <div className="flex items-center gap-2">
+          <img
+            src={logoUrl(p.teamName)}
+            alt=""
+            className="h-6 w-6 rounded bg-white object-contain ring-1 ring-white/50"
+            onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
+          />
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-white drop-shadow">{p.name}</div>
+            <div className="truncate text-[11px] text-white/80">{p.teamName}</div>
+          </div>
+        </div>
+        <div className="mt-2 flex items-center justify-between text-[11px] text-white/90">
+          <span className="tabular-nums">£{p.price.toFixed(1)}</span>
+          <span className="tabular-nums font-semibold">{p.points.toFixed(1)} pts</span>
+        </div>
+        <div className="mt-1 text-[10px] text-white/80">VPM <span className="tabular-nums">{vpm.toFixed(2)}</span></div>
+      </button>
+    );
+  }
+
+  /* ===== Bench card (unchanged helper) ===== */
+  function BenchCard({ p, onOpenPlayer }) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenPlayer?.(p.teamName, String(p.elementId ?? p.key))}
+        className="group flex min-w-[12rem] items-center gap-2 rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-left shadow-sm hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+        title={`${p.name} (${p.pos})`}
+      >
+        <img
+          src={logoUrl(p.teamName)}
+          alt=""
+          className="h-6 w-6 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
+          onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
+        />
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{p.name}</div>
+          <div className="truncate text-[11px] text-zinc-500">{p.teamName}</div>
+        </div>
+        <div className="ml-auto text-right text-[11px]">
+          <div className="tabular-nums font-semibold">{p.points.toFixed(1)} pts</div>
+          <div className="tabular-nums text-zinc-500">£{p.price.toFixed(1)}</div>
+        </div>
+      </button>
+    );
+  }
+
+  /* ===== Full-height pitch with GK row at top ===== */
+  function FormationRows({ bestXI, onOpenPlayer }) {
+    if (!bestXI) return null;
+    const xi   = bestXI.xi || [];
+    const gks  = xi.filter((p) => p.pos === "GK");
+    const defs = xi.filter((p) => p.pos === "DEF");
+    const mids = xi.filter((p) => p.pos === "MID");
+    const fwds = xi.filter((p) => p.pos === "FWD");
+
+    return (
+      // isolate => creates a new stacking context so z-0 stays above the card bg
+      <div className="relative isolate h-[540px] w-full overflow-hidden rounded-2xl">
+        {/* pitch background (NO negative z-index) */}
+        <div className="absolute inset-0 z-0">
+          {/* base grass */}
+          <div
+            className="absolute inset-0"
+            style={{ background: "linear-gradient(0deg,#0c6a51,#0a5a43)" }}
+          />
+          {/* mowing stripes */}
+          <div
+            className="absolute inset-0 opacity-30"
+            style={{
+              background:
+                "repeating-linear-gradient(0deg, transparent 0 38px, rgba(255,255,255,.08) 38px 76px)",
+            }}
+          />
+          {/* touchline & markings */}
+          <div className="absolute inset-2 rounded-2xl border-2 border-white/40" />
+          <div className="absolute left-1/2 top-1/2 h-28 w-28 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/30" />
+          {/* penalty areas */}
+          <div className="absolute left-1/2 top-2 h-28 w-[86%] -translate-x-1/2 rounded-b-[24px] border-2 border-white/35" />
+          <div className="absolute bottom-2 left-1/2 h-28 w-[86%] -translate-x-1/2 rounded-t-[24px] border-2 border-white/35" />
+          {/* six-yard boxes */}
+          <div className="absolute left-1/2 top-2 h-16 w-[46%] -translate-x-1/2 rounded-b-[18px] border-2 border-white/35" />
+          <div className="absolute bottom-2 left-1/2 h-16 w-[46%] -translate-x-1/2 rounded-t-[18px] border-2 border-white/35" />
+        </div>
+
+        {/* players (ensure above background) */}
+        <div className="relative z-10 flex h-full flex-col justify-between px-3 py-6">
+          {/* GK (top) */}
+          <div className="flex items-start justify-center gap-4">
+            {gks.map((p) => <PlayerCard key={p.key} p={p} onOpenPlayer={onOpenPlayer} />)}
+          </div>
+          {/* DEF */}
+          <div className="flex items-start justify-center gap-4">
+            {defs.map((p) => <PlayerCard key={p.key} p={p} onOpenPlayer={onOpenPlayer} />)}
+          </div>
+          {/* MID */}
+          <div className="flex items-start justify-center gap-4">
+            {mids.map((p) => <PlayerCard key={p.key} p={p} onOpenPlayer={onOpenPlayer} />)}
+          </div>
+          {/* FWD (bottom) */}
+          <div className="flex items-start justify-center gap-4">
+            {fwds.map((p) => <PlayerCard key={p.key} p={p} onOpenPlayer={onOpenPlayer} />)}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+
+  /* ===== Best Squad (pitch view) ===== */
+  function BestSquadCard({ best, onOpenPlayer }) {
+    if (!best) return null;
+    const { selected, totals, bestXI, bench } = best;
+
+    return (
+      <div className="mb-6 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold">Suggested Best Squad (15)</div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700 dark:text-zinc-400">
+            <Badge tone="green">
+              Best XI {bestXI ? `${bestXI.points.toFixed(1)} pts` : "—"}
+            </Badge>
+            {bestXI && <Badge tone="indigo">{bestXI.d}-{bestXI.m}-{bestXI.f}</Badge>}
+            <Badge tone="zinc">Squad {totals.points.toFixed(1)} pts</Badge>
+            <Badge tone="amber">£{totals.cost.toFixed(1)}</Badge>
+          </div>
+        </div>
+
+        {/* Full-height pitch (no aspect ratio wrapper anymore) */}
+        <FormationRows bestXI={bestXI} onOpenPlayer={onOpenPlayer} />
+
+        {/* Bench */}
+        <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-900/30">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">Bench (4)</div>
+            <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
+              GK2 + 3 outfield (sorted by priority)
+            </div>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {bench.map((p) => (
+              <BenchCard key={p.key} p={p} onOpenPlayer={onOpenPlayer} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  
+
+  /* ============================== Render ============================== */
+
+  return (
+    <section id="predictions" className="mx-auto w-full max-w-6xl px-2 pt-6 md:px-0">
+      {/* Page header */}
+      <div className="mb-3 flex items-end justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Fantasy Premier League</h1>
+        </div>
+      </div>
+
+      {/* ----- Quick GW bar (compact GW + extra stats) ----- */}
+      <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-4">
+        <div className="rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="mb-1 flex items-center justify-between">
+            <div className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Gameweek</div>
+            {!!currentEvent && (
+              <Badge tone={currentEvent.finished ? "green" : currentEvent.is_next ? "indigo" : "amber"}>
+                {currentEvent.finished ? "Finished" : currentEvent.is_next ? "Next" : "In progress"}
+              </Badge>
+            )}
+          </div>
+          <div className="text-base font-semibold">
+            {currentEvent ? currentEvent.name : "—"}
+          </div>
+          <div className="mt-1 text-[12px] text-zinc-600 dark:text-zinc-300">
+            Avg: <span className="tabular-nums font-semibold">
+              {currentEvent?.average_entry_score ?? "—"}
+            </span>
+          </div>
+          <div className="mt-1 text-[12px] text-zinc-600 dark:text-zinc-300">
+            Highest: <span className="tabular-nums font-semibold">
+              {currentEvent?.highest_score ?? "—"}
+            </span>
+          </div>
+          {/* extra micro stats inside the same compact card */}
+          <div className="mt-2 grid grid-cols-2 gap-1">
+            <div className="rounded-lg border border-zinc-200 px-2 py-1 text-[11px] dark:border-zinc-800">
+              Managers: <span className="tabular-nums font-semibold">{boot?.total_players ? boot.total_players.toLocaleString() : "—"}</span>
+            </div>
+          </div>
+        </div>
+
+        <MiniStat
+          label="Most Captained (GW)"
+          value={
+            mostCaptained
+              ? `${mostCaptained.web_name} `
+              : "—"
+          }
+          sub={mostCaptained?.canonical_team_name || mostCaptained?.team_norm}
+          tone="indigo"
+        />
+
+        <MiniStat
+          label="Highest Form (season)"
+          value={highestForm ? `${highestForm.web_name}` : "—"}
+          sub={highestForm ? `Form ${round1(parseFloat(highestForm.form || 0))}` : ""}
+          tone="violet"
+        />
+
+        <MiniStat
+          label="Most Selected (season)"
+          value={
+            mostSelectedOverall
+              ? `${mostSelectedOverall.web_name}`
+              : "—"
+          }
+          sub={
+            mostSelectedOverall
+              ? `${round1(parseFloat(mostSelectedOverall.selected_by_percent || 0))}%`
+              : ""
+          }
+          tone="green"
+        />
+      </div>
+
+      {/* ----- Three ranked lists from bootstrap ----- */}
+      <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-3">
+        {/* Top performers (GW) */}
+        <div className="rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="mb-2 text-sm font-semibold">Top performers (GW)</div>
+          {bootLoading ? (
+            <div className="text-sm text-zinc-500">Loading…</div>
+          ) : topPerformersGW.length ? (
+            <ol className="space-y-1.5">
+              {topPerformersGW.map((e) => (
+                <li key={`tp-${e.id}`}>
+                  <button
+                    type="button"
+                    onClick={() => onOpenPlayer?.(e.canonical_team_name || e.team_norm || e.team, String(e.understat_id ?? e.id))}
+                    className="group flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-1.5 text-left hover:border-zinc-300 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 dark:hover:bg-zinc-900"
+                    title="Open player"
+                  >
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={logoUrl(e.canonical_team_name || e.team_norm || e.team)}
+                        alt=""
+                        className="h-5 w-5 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
+                        onError={(ev) => (ev.currentTarget.src = "/logos/_default.png")}
+                      />
+                      <div className="leading-tight">
+                        <div className="text-sm font-medium group-hover:underline">{e.web_name}</div>
+                        <div className="text-[11px] text-zinc-500">{e.canonical_team_name || e.team_norm}</div>
+                      </div>
+                    </div>
+                    <div className="text-sm font-semibold tabular-nums">{e.event_points}</div>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="text-sm text-zinc-500">No GW points yet.</div>
+          )}
+        </div>
+
+        {/* Most transferred in (GW) */}
+        <div className="rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="mb-2 text-sm font-semibold">Most transferred in (GW)</div>
+          {bootLoading ? (
+            <div className="text-sm text-zinc-500">Loading…</div>
+          ) : mostInGW.length ? (
+            <ol className="space-y-1.5">
+              {mostInGW.map((e) => (
+                <li key={`in-${e.id}`}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenPlayer?.(
+                        e.canonical_team_name || e.team_norm || e.team,
+                        String(e.understat_id ?? e.id)
+                      )
+                    }
+                    className="group flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-1.5 text-left hover:border-zinc-300 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 dark:hover:bg-zinc-900"
+                    title="Open player"
+                  >
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={logoUrl(e.canonical_team_name || e.team_norm || e.team)}
+                        alt=""
+                        className="h-5 w-5 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
+                        onError={(ev) => (ev.currentTarget.src = "/logos/_default.png")}
+                      />
+                      <div className="leading-tight">
+                        <div className="text-sm font-medium group-hover:underline">{e.web_name}</div>
+                        <div className="text-[11px] text-zinc-500">
+                          {e.canonical_team_name || e.team_norm}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-sm font-semibold tabular-nums">
+                      {e.transfers_in_event?.toLocaleString?.() ?? e.transfers_in_event}
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="text-sm text-zinc-500">No transfers yet.</div>
+          )}
+        </div>
+
+        {/* Most transferred out (GW) */}
+        <div className="rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="mb-2 text-sm font-semibold">Most transferred out (GW)</div>
+          {bootLoading ? (
+            <div className="text-sm text-zinc-500">Loading…</div>
+          ) : mostOutGW.length ? (
+            <ol className="space-y-1.5">
+              {mostOutGW.map((e) => (
+                <li key={`out-${e.id}`}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenPlayer?.(
+                        e.canonical_team_name || e.team_norm || e.team,
+                        String(e.understat_id ?? e.id)
+                      )
+                    }
+                    className="group flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-1.5 text-left hover:border-zinc-300 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 dark:hover:bg-zinc-900"
+                    title="Open player"
+                  >
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={logoUrl(e.canonical_team_name || e.team_norm || e.team)}
+                        alt=""
+                        className="h-5 w-5 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
+                        onError={(ev) => (ev.currentTarget.src = "/logos/_default.png")}
+                      />
+                      <div className="leading-tight">
+                        <div className="text-sm font-medium group-hover:underline">{e.web_name}</div>
+                        <div className="text-[11px] text-zinc-500">
+                          {e.canonical_team_name || e.team_norm}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-sm font-semibold tabular-nums">
+                      {e.transfers_out_event?.toLocaleString?.() ?? e.transfers_out_event}
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="text-sm text-zinc-500">No transfers yet.</div>
+          )}
+        </div>
+      </div>
+
+      {/* ----- Next Gameweek — Predicted Points ----- */}
+      <div className="mb-3">
+        <h2 className="text-lg font-semibold tracking-tight">
+          Predicted points — Next Gameweek
+        </h2>
+        <p className="mt-1 text-sm text-zinc-600 font-medium dark:text-zinc-300">
+          These projections blend recent form, opponent difficulty, expected involvement (xG/xA), minutes expectation, and bonus potential.
+          All models were trained on over 150,000 rows of historical and current gameweek data with 30+ engineered features—including fixture difficulty, rolling form metrics, expected goals/assists, influence, and bonus potential—so each prediction is grounded in both player performance history and contextual match factors.
+        </p>
+        <button
+          type="button"
+          onClick={() => window.open('/model-details', '_blank')}
+          className="mt-2 inline-flex items-center rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+        >
+          View detailed information about the prediction model
+        </button>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800 dark:bg-zinc-950 mb-5 ">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex-1">
+            <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              Choose model
+            </label>
+            <select
+              className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-base shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              title="Select prediction model"
+            >
+              {MODEL_OPTIONS.map((opt) => (
+                <option key={opt.key} value={opt.key}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="md:w-1/2">
+            <div className="text-sm text-zinc-700 dark:text-zinc-500">
+              {MODEL_DESC[model] || "Model description unavailable."}
+            </div>
+            {modelMae != null && (
+              <div className="mt-1 text[16px] font-bold text-zinc-700 dark:text-zinc-500">
+                Validation MAE (Mean Average Error):&nbsp;
+                <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono dark:bg-zinc-200">
+                  {Number(modelMae).toFixed(4)}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+
+      <BestSquadCard best={bestSquad} onOpenPlayer={onOpenPlayer} />
+
+      {/* ----- Toolbar ----- */}
+      <div className="sticky top-[56px] z-10 mb-3 rounded-xl border border-zinc-200 bg-white/85 p-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-6">
+          <input
+            placeholder="Search player…"
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+            value={team}
+            onChange={(e) => setTeam(e.target.value)}
+          >
+            {teams.map((t) => (
+              <option key={t || "_any"} value={t}>
+                {t || "All teams"}
+              </option>
+            ))}
+          </select>
+          <select
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+            value={pos}
+            onChange={(e) => setPos(e.target.value)}
+          >
+            {positions.map((p) => (
+              <option key={p || "_any"} value={p}>
+                {p || "All positions"}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-zinc-600 dark:text-zinc-300">Top</label>
+            <input
+              type="number"
+              min={10}
+              max={1000}
+              step={10}
+              className="w-28 rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-zinc-700 dark:bg-zinc-900"
+              value={limit}
+              onChange={(e) => setLimit(Math.max(1, Number(e.target.value) || 100))}
+            />
+            <span className="text-sm text-zinc-500">players</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              onClick={() => {
+                setPos("");
+                setTeam("");
+                setQ("");
+                setLimit(100);
+              }}
+            >
+              Reset
+            </button>
+            <div className="hidden gap-2 md:flex">
+              {["GK", "DEF", "MID", "FWD"].map((x) => (
+                <button
+                  key={x}
+                  onClick={() => setPos(x)}
+                  className="rounded-lg px-2 py-1 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                >
+                  {x}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ----- Predictions Table ----- */}
+      {predLoading ? (
+        <div className="p-4 text-sm text-zinc-600 dark:text-zinc-300">Loading predictions…</div>
+      ) : predErr ? (
+        <div className="p-4 text-sm text-rose-600">Failed to load: {predErr}</div>
+      ) : (
+        <div className="overflow-auto rounded-xl border border-zinc-200 shadow-sm dark:border-zinc-800">
+          <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+            <thead className="bg-zinc-50 text-xs uppercase tracking-wide dark:bg-zinc-900">
+              <tr>
+                <th className="px-3 py-2">Player</th>
+                <th className="px-3 py-2">Team</th>
+                <th className="px-3 py-2">Price</th>
+                <th className="px-3 py-2">Pos</th>
+                <th className="px-3 py-2">GW</th>
+                <th className="px-3 py-2">Opponent</th>
+                <th className="px-3 py-2">Projected</th>
+                <th className="px-3 py-2">Factors</th>
+                <th className="px-3 py-2">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r, i) => {
+                const playerName = r.matched_player_name || r.name || "Unknown";
+                const teamName =
+                  r.matched_team_name ||
+                  r.matched_team_from_catalog ||
+                  r.canonical_team_name ||
+                  r.team ||
+                  "";
+                const opp = r.next_opponent || r.canonical_opponent_name || "";
+                const diff = r.next_opponent_difficulty ?? null;
+                const venue = inferVenue(r.explanation);
+                const pts = num(r.predicted_total_points);
+                const width = maxPts > 0 ? Math.max(2, Math.round((pts / maxPts) * 100)) : 0;
+                const factorChips = chipsFromTopFactors(r.top_factors);
+
+                const el = findElementForPrediction(r);
+                const price = el ? (num(el.now_cost) / 10).toFixed(1) : null;
+                const owner = el ? parseFloat(el.selected_by_percent || 0) : null;
+
+                return (
+                  <tr
+                    key={`${r.understat_id || r.element || r.fbref_id || i}`}
+                    className="border-t border-zinc-200 align-top odd:bg-zinc-50/60 dark:border-zinc-800 dark:odd:bg-zinc-900/30"
+                  >
+                    {/* Player (bigger row) */}
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={logoUrl(teamName)}
+                          alt=""
+                          className="h-6 w-6 rounded bg-white object-contain ring-1 ring-zinc-200 dark:ring-zinc-700"
+                          onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
+                        />
+                        <button
+                          type="button"
+                          className="font-medium hover:underline"
+                          title="Open player profile"
+                          onClick={() => {
+                            // Pass team + Understat ID (preferred) to existing App handler.
+                            const id = r.understat_id ?? r.element ?? r.fbref_id;
+                            if (id != null) onOpenPlayer?.(teamName, String(id));
+                          }}
+                        >
+                          {playerName}
+                        </button>
+                      </div>
+                      {/* secondary line: ownership if available */}
+                      {owner != null && (
+                        <div className="mt-1 text-[11px] text-zinc-500">
+                          Selected by <span className="tabular-nums">{owner.toFixed(1)}%</span>
+                        </div>
+                      )}
+                    </td>
+
+                    {/* Team */}
+                    <td className="px-3 py-3">
+                      <Badge tone="indigo">{teamName || "—"}</Badge>
+                    </td>
+
+                    {/* Price */}
+                    <td className="px-3 py-3">
+                      {price ? (
+                        <span className="tabular-nums font-medium">£{price}</span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+
+                    {/* Pos */}
+                    <td className="px-3 py-3">{r.position || "—"}</td>
+
+                    {/* GW */}
+                    <td className="px-3 py-3">{r.next_gameweek ?? "—"}</td>
+
+                    {/* Opponent */}
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const oppName = r.canonical_opponent_name || "";
+                        const diff = r.next_opponent_difficulty ?? null;
+                        const venue = getVenue(r); // NEW
+                        return (
+                          <div
+                            className={`relative w-28 h-28 rounded-xl p-2 flex flex-col items-center justify-center text-center ${diffCardBg(diff)}`}
+                            title={oppName || "Opponent"}
+                          >
+                            {/* HOME/AWAY pill */}
+                            {venue && (
+                              <span
+                                className={`absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold leading-none ring-1 ring-white/30 ${venuePillClass(venue)}`}
+                              >
+                                {venue === "HOME" ? "H" : "A"}
+                              </span>
+                            )}
+
+                            <img
+                              src={logoUrl(oppName || teamName)}
+                              alt=""
+                              className="h-8 w-8 rounded bg-white object-contain ring-1 ring-white/50"
+                              onError={(e) => (e.currentTarget.src = "/logos/_default.png")}
+                            />
+                            <div className="mt-1 line-clamp-2 text-[11px] font-medium">
+                              {oppName || "—"}
+                            </div>
+                            {diff != null && (
+                              <div className="mt-1 text-[11px] font-semibold">★{diff}</div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </td>
+
+
+                    {/* Projected */}
+                    <td className="px-3 py-3">
+                      <div className="inline-flex items-center rounded-lg border border-zinc-300 px-2 py-1 text-sm font-semibold tabular-nums dark:border-zinc-700">
+                        {round1(pts)} pts
+                      </div>
+                    </td>
+
+                    {/* Summary + always-visible factor pills (bigger cell) */}
+                    {/* Factors only */}
+                    <td className="px-3 py-3">
+                      <div className="flex flex-wrap gap-1.5 max-w-[26rem]">
+                        {factorChips.length ? (
+                          factorChips.map((c, j) => (
+                            <Badge key={j} tone="violet">
+                              {c}
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-zinc-400 text-xs">No factor breakdown.</span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Details (collapsible) */}
+                    <td className="px-3 py-3">
+                      <details>
+                        <summary className="cursor-pointer text-indigo-600 hover:underline dark:text-indigo-400">
+                          View
+                        </summary>
+                        <div className="mt-2 space-y-2">
+                          {r.explanation && (
+                            <div className="max-w-xl text-xs leading-snug text-zinc-700 dark:text-zinc-300">
+                              {r.explanation}
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {filtered.length === 0 && (
+            <div className="p-4 text-sm text-zinc-500">No results match your filters.</div>
+          )}
+        </div>
+      )}
+
+      {/* errors for bootstrap */}
+      {bootErr && (
+        <div className="mt-2 text-sm text-amber-600">
+          FPL bootstrap failed to load: {bootErr}
+        </div>
+      )}
+    </section>
+  );
+}

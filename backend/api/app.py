@@ -836,6 +836,14 @@ def fpl_predict():
                     """)
         return jsonify_records(cur.fetchall())
 
+@app.route("/fpl_predict_<string:model>", methods=["GET"])
+def fpl_predict_model(model):
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(f"""
+                    SELECT * FROM predicted_next_gw where match_method != 'none' and model = '{model}' 
+                    """)
+        return jsonify_records(cur.fetchall())
+
 @app.route("/fpl_data", methods=["GET"])
 def fpl_data():
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:

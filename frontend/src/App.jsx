@@ -8,6 +8,7 @@ import ResultsListModal from "./components/ResultsListModal";
 import MatchCenter from "./components/MatchCenter";
 import ContactModal from "./components/ContactModal";
 import ResultsFixturesDeck from "./components/ResultsFixturesDeck";
+import PredictionsPage from "./components/PredictionsPage";
 
 /* Recharts */
 import {
@@ -1293,8 +1294,8 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                       size="md"
                     />
                   )}
-              </div>
-              
+                </div>
+
                 {/* Optional: more gauges if FBref is present */}
                 {selectedFb && (
                   <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4">
@@ -1340,14 +1341,10 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                       color={vis.stroke} 
                       size="md" 
                     />
-
-                    {/* Keep one classic KPI if you want balance */}
-                    {/* <KPI label="Dribble success" value={`${Math.round(selectedFb.takeOnSuccPct)}%`} avg={fbrefAvg ? `${Math.round(fbrefAvg.takeOnSuccPct)}%` : undefined} color={vis.stroke} /> */}
-          </div>
-        )}
+                  </div>
+                )}
               </>
             ) : null}
-
 
             {/* ── Style + Defensive Fingerprints (side by side) ── */}
             <div className="mt-3 border-t border-zinc-200 dark:border-zinc-800" />
@@ -1367,7 +1364,7 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                   </div>
                 </div>
                 <div className="h-72">
-                <ResponsiveContainer>
+                  <ResponsiveContainer>
                     <RadarChart data={styleRadarData} outerRadius="80%">
                       <PolarGrid />
                       <PolarAngleAxis dataKey="metric" tick={{ fontSize: 12 }} />
@@ -1415,15 +1412,15 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                         fill={vis.stroke}
                         fillOpacity={0.5}
                         isAnimationActive
-                    />
+                      />
                     </RadarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-1 text-[11px] text-zinc-500">
+                  </ResponsiveContainer>
+                </div>
+                <div className="mt-1 text-[11px] text-zinc-500">
                   Normalized league-wide and invert “against” volumes so bigger polygon ≈ better defensive profile.
+                </div>
               </div>
-              </div>
-      </div>
+            </div>
 
             <div className="mt-4 flex flex-col items-center gap-2 text-center">
               <button
@@ -1451,9 +1448,9 @@ function LeagueAnalysisSection({ apiBase, standings, teams, onOpenTeam, onOpenPl
                 </svg>
               </button>
             </div>
-                </div>
-          )}
-        </Panel>
+          </div>
+        )}
+      </Panel>
 
       {/* Scatters */}
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -1899,6 +1896,7 @@ export default function App() {
   const [playersOpen, setPlayersOpen] = useState(false);
   const [playersInitial, setPlayersInitial] = useState(null);
   const [contactOpen, setContactOpen] = useState(false);
+  const [activePage, setActivePage] = useState("home");
 
   // ── Theme (light/dark) ───────────────────────────────────────────
   const [theme, setTheme] = useState(() => {
@@ -1995,6 +1993,7 @@ export default function App() {
     setPlayersInitial(null);
     setActiveMatchId(null);
     setModalTeamName(null);
+    setActivePage("home");
 
     if (!h || h === "#") return;
 
@@ -2023,6 +2022,7 @@ export default function App() {
     if (h === "#fixtures") { setFixturesModalOpen(true); return; }
     if (h === "#results")  { setResultsModalOpen(true);  return; }
     if (h === "#contact")  { setContactOpen(true);       return; }
+    if (h === "#predictions") { setActivePage("predictions"); return; }
   };
 
   useEffect(() => {
@@ -2073,19 +2073,53 @@ export default function App() {
           setModalTeamName(null);
           requestAnimationFrame(() => scrollToId("league-standings"));
         }}
+        onOpenPredictions={() => {
+          // close any open modals and navigate
+          setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false);
+          setFixturesModalOpen(false); setPlayersOpen(false); setContactOpen(false);
+          setActivePage("predictions");
+          setRoute("#predictions");
+        }}
         onOpenContact={() => { setContactOpen(true); setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false); setFixturesModalOpen(false); setPlayersOpen(false); setRoute("#contact"); }}
         onGoHome={() => {
           setModalOpen(false); setResultsModalOpen(false); setMatchCenterOpen(false);
           setFixturesModalOpen(false); setPlayersOpen(false); setContactOpen(false);
+          setActivePage("home");
           clearRoute(true)
         }}
       />
 
       <main className="px-4 pt-4 pb-10 md:px-6">
-        {/* Recent results
-        <div className="mt-8">
-          <RecentResults apiBase={API_BASE} onOpenMatch={openMatch} onShowAll={() => { setResultsModalOpen(true); setRoute("#results"); }} />
-        </div> */}
+        {activePage === "predictions" ? (
+          <PredictionsPage
+            apiBase={API_BASE}
+            onOpenPlayer={openPlayer}
+          />
+        ) : (
+          <>
+            {/* FPL Predictions — CTA */}
+            <section className="mx-auto mt-6 w-full max-w-6xl px-4 md:px-6">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+                <div className="flex flex-col items-start justify-between gap-3 md:flex-row md:items-center">
+                  <div>
+                    <h2 className="text-base font-semibold">FPL Predictions</h2>
+                    <p className="mt-1 max-w-3xl text-sm text-zinc-600 dark:text-zinc-300">
+                      Basic gameweek data with a next-GW points predictor. It trains on historical and current data and uses a LightGBM model to estimate how many points a player might score in the upcoming gameweek.
+                    </p>
+                  </div>
+                  <div className="shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => { setActivePage("predictions"); setRoute("#predictions"); }}
+                      className="inline-flex items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40"
+                      title="Open FPL Predictions"
+                    >
+                      Open Predictions
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
 
         {/* Upcoming fixtures */}
         <section id="upcoming-fixtures" className="mx-auto mt-10 w-full max-w-6xl px-4 md:px-6">
@@ -2117,6 +2151,8 @@ export default function App() {
         <div className="mx-auto mt-4 w-full max-w-6xl">
           <WeeklyMovementPanel apiBase={API_BASE} />
         </div>
+        </>
+        )}
       </main>
 
       <SiteFooter ownerName={OWNER_NAME} />

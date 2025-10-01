@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fpl-daily
+  labels:
+    app: etl-jobs
+spec:
+  schedule: "0 1 * * *"
+  timeZone: "America/Chicago"
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: etl-jobs
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+          # initContainers:
+          #   - name: wait-for-postgres
+          #     image: postgres:17-alpine
+          #     imagePullPolicy: IfNotPresent
+          #     env:
+          #       - name: DB_HOST
+          #         value: "postgres.epl-data.svc.cluster.local"
+          #       - name: DB_PORT
+          #         value: "5432"
+          #     command: ["sh", "-c"]
+          #     args:
+          #       - |
+          #         set -e
+          #         echo "Waiting for Postgres at ${DB_HOST}:${DB_PORT} ..."
+          #         until pg_isready -h "${DB_HOST}" -p "${DB_PORT}"; do
+          #           sleep 3
+          #         done
+          #         echo "Postgres is ready."
+          containers:
+            - name: etl
+              image: ghcr.io/tamhid92/fpl:staging
+              imagePullPolicy: Always
+              command: ["/bin/sh","-lc"]
+              args: ["exec python /app/entrypoint.py update"]
+              env:
+                - name: DB_HOST
+                  value: "postgres"
+                - name: DB_PORT
+                  value: "5432"
+                - name: DB_NAME
+                  valueFrom:
+                    configMapKeyRef:
+                      name: db-config
+                      key: DB_NAME
+                - name: DB_USER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: db-config
+                      key: DB_SUPERUSER
+                - name: DB_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secrets
+                      key: POSTGRES_PASSWORD
+                - name: API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: api-auth
+                      key: API_TOKEN
+                - name: DATA_DIR
+                  value: "/data"
+                - name: TMP_DIR
+                  value: "/tmp"
+              resources:
+                requests:
+                  cpu: "128m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "1Gi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001

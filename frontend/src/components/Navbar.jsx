@@ -1,5 +1,17 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { Menu, BarChart3, Users2, Trophy, Search, CalendarDays, User, LineChart, Sun, Moon } from "lucide-react";
+import {
+  Menu,
+  BarChart3,
+  Users2,
+  Trophy,
+  Search,
+  CalendarDays,
+  User,
+  LineChart,
+  Sun,
+  Moon,
+  TrendingUp, // ✅ NEW
+} from "lucide-react";
 import { motion } from "framer-motion";
 
 // Simple logo helper
@@ -14,11 +26,13 @@ function logoUrl(team) {
  *  - teams?: string[]
  *  - onItemClick?(item)
  *  - onOpenTeam?(teamName)
- *  - onOpenResults?()        // open ResultsListModal (played)
- *  - onOpenFixtures?()       // open FixturesListModal (upcoming)
- *  - onOpenPlayers?()        // open PlayersModal
- *  - onOpenStandings?()       // open DataAnalysisModal   ← NEW
- *  - onGoHome?()             // close all modals
+ *  - onOpenResults?()        
+ *  - onOpenFixtures?()       
+ *  - onOpenPlayers?()        
+ *  - onOpenStandings?()      
+ *  - onOpenPredictions?()    
+ *  - onOpenContact?()
+ *  - onGoHome?()
  */
 export default function Navbar({
   brand = "English Premier League Data & Analytics",
@@ -28,7 +42,8 @@ export default function Navbar({
     { label: "Fixtures", icon: <CalendarDays className="h-4 w-4" /> },
     { label: "Matches", icon: <Trophy className="h-4 w-4" /> },
     { label: "Players", icon: <User className="h-4 w-4" /> },
-    { label: "Standings", icon: <LineChart className="h-4 w-4" /> }, // NEW
+    { label: "FPL", icon: <TrendingUp className="h-4 w-4" /> }, // ✅ NEW
+    { label: "Standings", icon: <LineChart className="h-4 w-4" /> },
   ],
   teams = [],
   onItemClick,
@@ -37,10 +52,11 @@ export default function Navbar({
   onOpenFixtures,
   onOpenPlayers,
   onOpenStandings,
+  onOpenPredictions, // ✅ NEW
   onOpenContact,
   onGoHome,
   theme = "light",
-  onToggleTheme
+  onToggleTheme,
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -145,7 +161,9 @@ export default function Navbar({
                   } else if (lower === "players") {
                     onOpenPlayers?.();
                   } else if (lower === "standings" || lower === "league standings") {
-                    onOpenStandings?.(); // NEW
+                    onOpenStandings?.();
+                  } else if (lower === "predictions" || lower === "fpl") {
+                    onOpenPredictions?.(); // ✅ NEW
                   } else if (lower === "home") {
                     goHome();
                   } else {
@@ -339,13 +357,20 @@ export default function Navbar({
               <User className="mr-2 inline h-4 w-4" />
               Players
             </button>
-            {/* NEW: Contact CTA (mobile) */}
-              <button
-                onClick={() => { onOpenContact?.(); setMobileOpen(false); }}
-                className="col-span-2 rounded-lg bg-fuchsia-600 px-3 py-2 text-left text-sm font-semibold text-white hover:bg-fuchsia-700 dark:bg-fuchsia-500 dark:hover:bg-fuchsia-600"
-              >
-                About
-              </button>
+            <button
+              onClick={() => { onOpenPredictions?.(); setMobileOpen(false); }}
+              className="col-span-2 rounded-lg border border-zinc-200 px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:border-zinc-800 dark:hover:bg-zinc-900"
+            >
+              <TrendingUp className="mr-2 inline h-4 w-4" />
+              FPL
+            </button>
+            {/* Contact CTA (mobile) */}
+            <button
+              onClick={() => { onOpenContact?.(); setMobileOpen(false); }}
+              className="col-span-2 rounded-lg bg-fuchsia-600 px-3 py-2 text-left text-sm font-semibold text-white hover:bg-fuchsia-700 dark:bg-fuchsia-500 dark:hover:bg-fuchsia-600"
+            >
+              About
+            </button>
           </div>
 
           {/* Teams list with logos */}

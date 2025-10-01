@@ -1,0 +1,7 @@
+requests
+pandas
+sqlalchemy
+rapidfuzz
+jellyfish
+unidecode
+numpy
