@@ -4,33 +4,43 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  trigger:
     runs-on: [self-hosted, k8s]
+
+    env:
+      JENKINS_URL:  http://jenkins.jenkins.svc.cluster.local:8080
+      JENKINS_USER: ${{ secrets.JENKINS_USER }}
+      JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+      JENKINS_JOB:  upload_preds_to_db
 
     steps:
       - name: Trigger Jenkins
-        env: 
-          JENKINS_URL:   http://jenkins.jenkins.svc.cluster.local:8080
-          JENKINS_USER:  ${{ secrets.JENKINS_USER }}
-          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
-          JENKINS_JOB: "upload_preds_to_db"
+        shell: bash
         run: |
           set -euo pipefail
-          # Try to get crumb (works whether CSRF is on or off)
+
+          # Try to get CSRF crumb (works whether CSRF is enabled or not)
           CRUMB_JSON="$(curl -sf --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
             "${JENKINS_URL}/crumbIssuer/api/json" || true)"
-          if [[ -n "$CRUMB_JSON" ]]; then
-            CRUMB_HEADER="Jenkins-Crumb:$(echo "$CRUMB_JSON" | jq -r .crumb)"
-            EXTRA="-H ${CRUMB_HEADER}"
+
+          if [[ -n "${CRUMB_JSON}" ]]; then
+            CRUMB="$(printf '%s' "${CRUMB_JSON}" | sed -n 's/.*"crumb":"\([^"]*\)".*/\1/p')"
+            EXTRA=(-H "Jenkins-Crumb:${CRUMB}")
           else
-            EXTRA=""
+            EXTRA=()
           fi
 
-          # Optionally pass which components changed as params to the job
-          curl -sS -X POST --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
-            ${EXTRA} \
-            "${JENKINS_URL}/job/${JENKINS_JOB}/buildWithParameters" \
-            --data-urlencode "frontend_changed=${{ needs.changes.outputs.frontend }}" \
-            --data-urlencode "api_changed=${{ needs.changes.outputs.api }}"
+          BUILD_URL="${JENKINS_URL}/job/${JENKINS_JOB}/build"
 
-          echo "Triggered Jenkins job: ${JENKINS_JOB}"
+          # Trigger build and capture HTTP status
+          HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -X POST --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${EXTRA[@]}" "${BUILD_URL}")
+
+          # Jenkins typically returns 201 (Created). Some setups may 302.
+          if [[ "${HTTP_CODE}" != "201" && "${HTTP_CODE}" != "302" ]]; then
+            echo "Unexpected HTTP status from Jenkins: ${HTTP_CODE}"
+            exit 1
+          fi
+
+          echo "Triggered Jenkins job '${JENKINS_JOB}' (HTTP ${HTTP_CODE})"
