@@ -829,7 +829,7 @@ def team_data_conceded(team_stat):
         return jsonify_records(cur.fetchall())
 
 @app.route("/fpl_predict_summ", methods=["GET"])
-def fpl_predict():
+def fpl_predict_summ():
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(f"""
                     SELECT * FROM prediction_summary
@@ -853,7 +853,7 @@ def fpl_predict_model(model):
         return jsonify_records(cur.fetchall())
 
 @app.route("/fpl_predict_last_<string:model>", methods=["GET"])
-def fpl_predict_model(model):
+def fpl_predict_model_last(model):
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(f"""
                     SELECT * FROM predicted_last_gw where match_method != 'none' and model = '{model}' 
