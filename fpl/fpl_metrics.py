@@ -11,17 +11,17 @@ FPL_EVENT_LIVE = "https://fantasy.premierleague.com/api/event/{gw}/live/"
 FPL_BOOTSTRAP = "https://fantasy.premierleague.com/api/bootstrap-static/"
 PREDS_BASE = "http://epl-api:8000"
 
-def fetch_json(url: str, timeout: int = 30, API_TOKEN="") -> dict:
+def fetch_json(url: str, API_TOKEN="") -> dict:
     if API_TOKEN:
         headers = {
             "X-API-Key": API_TOKEN,
             "Accept": "application/json"
         }
-        r = requests.get(url, headers=headers, timeout=timeout)
+        r = requests.get(url, headers=headers)
         r.raise_for_status()
         return r.json()
     else:
-        r = requests.get(url, timeout=timeout)
+        r = requests.get(url)
         r.raise_for_status()
         return r.json()
 
