@@ -27,7 +27,7 @@ def fetch_json(url: str, API_TOKEN="") -> dict:
 
 def get_predictions(pred_base, model, API_TOKEN):
 
-    url = f"{pred_base.rstrip('/')}/fpl_predict_last{model}"
+    url = f"{pred_base.rstrip('/')}/fpl_predict_last_{model}"
     data = fetch_json(url, API_TOKEN)
     df = pd.DataFrame(data)
 
