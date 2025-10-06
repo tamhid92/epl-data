@@ -16,13 +16,14 @@ def fetch_json(url: str, timeout: int = 30) -> dict:
     r.raise_for_status()
     return r.json()
 
-def get_predictions(pred_base: str, model: str) -> pd.DataFrame:
-    """
-    Expecting a list[dict] with keys including:
-    element (int), predicted_total_points (float), position (str) (if available)
-    """
-    url = f"{pred_base.rstrip('/')}/fpl_predict_{model}"
-    data = fetch_json(url)
+def get_predictions(pred_base, model, API_TOKEN):
+
+    headers = {
+        "X-API-Key": API_TOKEN,
+        "Accept": "application/json"
+    }
+    url = f"{pred_base.rstrip('/')}/fpl_predict_last{model}"
+    data = fetch_json(url, headers=headers)
     df = pd.DataFrame(data)
 
     if "element" not in df.columns or "predicted_total_points" not in df.columns:
@@ -88,10 +89,6 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     }
 
 def topk_hits(df: pd.DataFrame, k_list: List[int] = [10, 20]) -> Dict[str, float]:
-    """
-    df must have columns: predicted_total_points, total_points.
-    Compute fraction of overlap between top-K predicted and top-K actual.
-    """
     out = {}
     if df.empty:
         for k in k_list:
@@ -132,7 +129,7 @@ def evaluate_model(df_pred: pd.DataFrame, df_actual: pd.DataFrame, model: str, g
     m.update({k: float(v) for k, v in tk.items()})
     return m
 
-def main(engine):
+def main(engine, API_TOKEN):
     fpl_data = requests.get(FPL_BOOTSTRAP).json()
     
 
@@ -148,7 +145,7 @@ def main(engine):
     for model in MODELS:
         try:
             print(f"\nFetching predictions: {model}")
-            pred_df = get_predictions(PREDS_BASE, model)
+            pred_df = get_predictions(PREDS_BASE, model, API_TOKEN)
             print(f"  Rows: {len(pred_df)} (unique elements: {pred_df['element'].nunique()})")
             m = evaluate_model(pred_df, actual_df, model, gw)
             row = {"model": model, **m}
