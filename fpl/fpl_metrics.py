@@ -11,19 +11,24 @@ FPL_EVENT_LIVE = "https://fantasy.premierleague.com/api/event/{gw}/live/"
 FPL_BOOTSTRAP = "https://fantasy.premierleague.com/api/bootstrap-static/"
 PREDS_BASE = "http://epl-api:8000"
 
-def fetch_json(url: str, timeout: int = 30) -> dict:
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+def fetch_json(url: str, timeout: int = 30, API_TOKEN="") -> dict:
+    if API_TOKEN:
+        headers = {
+            "X-API-Key": API_TOKEN,
+            "Accept": "application/json"
+        }
+        r = requests.get(url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    else:
+        r = requests.get(url, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
 
 def get_predictions(pred_base, model, API_TOKEN):
 
-    headers = {
-        "X-API-Key": API_TOKEN,
-        "Accept": "application/json"
-    }
     url = f"{pred_base.rstrip('/')}/fpl_predict_last{model}"
-    data = fetch_json(url, headers=headers)
+    data = fetch_json(url, API_TOKEN)
     df = pd.DataFrame(data)
 
     if "element" not in df.columns or "predicted_total_points" not in df.columns:
