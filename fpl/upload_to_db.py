@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 from sqlalchemy import create_engine
+import table_duplication
+import fpl_metrics
 
 print("-------- UPLOAD TO DB SCRIPT --------")
 
@@ -16,9 +18,14 @@ FILENAME = "preds_merged.csv"
 
 engine = create_engine(DB_URL)
 
+table_duplication.duplicate_replace_table(engine)
+fpl_metrics.main(engine)
+
 print(f"OS List Dir: {os.listdir(INPUT_DIR)}")
 print(f"Loading {FILENAME} ...")
 df = pd.read_csv(f"{INPUT_DIR}/{FILENAME}")
 df.to_sql("predicted_next_gw", engine, if_exists="replace", index=False)
+
+
 
 print("Done.")

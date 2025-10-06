@@ -828,6 +828,14 @@ def team_data_conceded(team_stat):
         cur.execute(f'SELECT * FROM {table} ORDER BY 1 ASC LIMIT %s OFFSET %s', (limit, offset))
         return jsonify_records(cur.fetchall())
 
+@app.route("/fpl_predict_summ", methods=["GET"])
+def fpl_predict():
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(f"""
+                    SELECT * FROM prediction_summary
+                    """)
+        return jsonify_records(cur.fetchall())
+
 @app.route("/fpl_predict", methods=["GET"])
 def fpl_predict():
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -843,6 +851,15 @@ def fpl_predict_model(model):
                     SELECT * FROM predicted_next_gw where match_method != 'none' and model = '{model}' 
                     """)
         return jsonify_records(cur.fetchall())
+
+@app.route("/fpl_predict_last_<string:model>", methods=["GET"])
+def fpl_predict_model(model):
+    with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(f"""
+                    SELECT * FROM predicted_last_gw where match_method != 'none' and model = '{model}' 
+                    """)
+        return jsonify_records(cur.fetchall())
+
 
 @app.route("/fpl_data", methods=["GET"])
 def fpl_data():
