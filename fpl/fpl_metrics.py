@@ -14,7 +14,7 @@ PREDS_BASE = "http://epl-api:8000"
 def fetch_json(url: str, API_TOKEN="") -> dict:
     if API_TOKEN:
         headers = {
-            "X-API-Key": API_TOKEN,
+            "X-API-TOKEN": API_TOKEN,
             "Accept": "application/json"
         }
         r = requests.get(url, headers=headers)
