@@ -53,6 +53,33 @@ function Badge({ children, tone = "zinc" }) {
   );
 }
 
+const fmt = {
+  num: (v, d = 3) => Number(v)?.toFixed?.(d) ?? "—",
+  pct: (v, d = 1) => (Number.isFinite(+v) ? (100 * +v).toFixed(d) + "%" : "—"),
+};
+const MODEL_LABEL = { lgb: "LightGBM", xgb: "XGBoost", lstm: "PyTorch LSTM", mlp: "PyTorch MLP" };
+const toneForModel = (m) =>
+  ({ lgb: "indigo", xgb: "violet", lstm: "blue", mlp: "amber" }[m] || "slate");
+
+function Bar({ value = 0, max = 1, label, good = false }) {
+  const pct = Math.max(0, Math.min(100, (value / (max || 1)) * 100));
+  return (
+    <div className="w-full">
+      <div className="mb-0.5 flex justify-between text-[11px] text-zinc-500">
+        <span>{label}</span>
+        <span className="tabular-nums">{fmt.num(value, 2)}</span>
+      </div>
+      <div className="h-2 w-full rounded bg-zinc-200/70 dark:bg-zinc-800">
+        <div
+          className={`h-2 rounded ${good ? "bg-emerald-500" : "bg-zinc-600"}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+
 function MobilePredictionCard({ r, findElementForPrediction, openPlayerNormalized, logoUrl, pickTeamNameForLogo, normalizeTeamNameForLogo, diffCardBg, venuePillClass, round1, num }) {
   const playerName = r.matched_player_name || r.name || "Unknown";
   const teamName = normalizeTeamNameForLogo(
@@ -243,6 +270,54 @@ export default function PredictionsPage({ apiBase = "/api", onOpenPlayer }) {
 
   const openPlayerNormalized = useMemo(() => makeOpenPlayerNormalized(onOpenPlayer), [onOpenPlayer]);
 
+  const [summLoading, setSummLoading] = useState(false);
+  const [summErr, setSummErr] = useState(null);
+  const [summRows, setSummRows] = useState([]);
+
+  const [evalGw, setEvalGw] = useState(null); // latest completed GW
+
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        setSummLoading(true);
+        setSummErr(null);
+        const headers = {};
+        const token = import.meta.env?.VITE_API_TOKEN;
+        if (token) headers["X-API-TOKEN"] = token;
+        const base = apiBase.replace(/\/$/, "");
+        const res = await fetch(`${base}/fpl_predict_summ`, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!ignore) setSummRows(Array.isArray(data) ? data : []);
+      } catch (e) {
+        if (!ignore) setSummErr(String(e));
+      } finally {
+        if (!ignore) setSummLoading(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [apiBase]);
+
+  // Pull the latest COMPLETED gameweek from the official FPL bootstrap.
+  // We choose max(id) where event.finished === true.
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        const r = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
+        const j = await r.json();
+        const events = Array.isArray(j?.events) ? j.events : [];
+        const done = events.filter(e => e?.finished === true);
+        const gw = done.length ? Math.max(...done.map(e => e.id)) : null;
+        if (!ignore) setEvalGw(gw ?? null);
+      } catch {
+        if (!ignore) setEvalGw(null);
+      }
+    })();
+    return () => { ignore = true; };
+  }, []);
+
   /* ---------- fetch bootstrap once ---------- */
   useEffect(() => {
     let ignore = false;
@@ -407,6 +482,117 @@ export default function PredictionsPage({ apiBase = "/api", onOpenPlayer }) {
     if (!elements?.length) return [];
     return [...elements].sort((a, b) => num(b.transfers_out_event) - num(a.transfers_out_event)).slice(0, 8);
   }, [elements]);
+
+  // Team of the Week (GW) — based on element.event_points in the current/last GW
+  const teamOfWeek = useMemo(() => {
+    if (!boot?.elements?.length || !boot?.element_types?.length) return null;
+
+    // Map element_type -> "GK/DEF/MID/FWD"
+    const typeById = (() => {
+      const m = new Map();
+      for (const t of boot.element_types) {
+        const short =
+          t.singular_name_short?.toUpperCase?.() ||
+          t.short_singular_name?.toUpperCase?.() ||
+          t.singular_name?.toUpperCase?.();
+        let pos = short;
+        if (short === "GKP" || short === "GK") pos = "GK";
+        if (short === "DEF") pos = "DEF";
+        if (short === "MID") pos = "MID";
+        if (short === "FWD" || short === "FW") pos = "FWD";
+        m.set(Number(t.id), pos);
+      }
+      return m;
+    })();
+
+    // Convert elements with >0 GW points into candidates
+    const candidates = (boot.elements || [])
+      .filter((e) => num(e.event_points) > 0)
+      .map((e) => ({
+        key: String(e.id),
+        name: e.web_name || `${e.first_name} ${e.second_name}`,
+        teamName: normalizeTeamNameForLogo(
+          pickTeamNameForLogo(e.canonical_team_name, e.team_norm, e.team)
+        ),
+        teamId: Number(e.team) || 0,
+        elementId: Number(e.id),
+        pos: typeById.get(Number(e.element_type)),
+        price: Number(e.now_cost || 0) / 10,
+        points: num(e.event_points),
+      }))
+      .filter((p) => ["GK", "DEF", "MID", "FWD"].includes(p.pos));
+
+    if (!candidates.length) return null;
+
+    const byPos = { GK: [], DEF: [], MID: [], FWD: [] };
+    for (const c of candidates) byPos[c.pos].push(c);
+    for (const k of Object.keys(byPos)) {
+      byPos[k].sort((a, b) => b.points - a.points || b.price - a.price);
+    }
+
+    // Try all valid FPL formations that sum to 10 outfielders + 1 GK
+    const formations = [];
+    for (let d = 3; d <= 5; d++) {
+      for (let m = 2; m <= 5; m++) {
+        for (let f = 1; f <= 3; f++) {
+          if (d + m + f === 10) formations.push({ d, m, f });
+        }
+      }
+    }
+
+    let bestXI = null;
+    for (const f of formations) {
+      if (
+        byPos.GK.length < 1 ||
+        byPos.DEF.length < f.d ||
+        byPos.MID.length < f.m ||
+        byPos.FWD.length < f.f
+      ) continue;
+
+      const xi = [
+        byPos.GK[0],
+        ...byPos.DEF.slice(0, f.d),
+        ...byPos.MID.slice(0, f.m),
+        ...byPos.FWD.slice(0, f.f),
+      ];
+      const pts = xi.reduce((s, x) => s + x.points, 0);
+      if (!bestXI || pts > bestXI.points) bestXI = { ...f, xi, points: pts };
+    }
+
+    if (!bestXI) return null;
+
+    return {
+      bestXI,
+      totals: { points: bestXI.points, cost: bestXI.xi.reduce((s, x) => s + (x.price || 0), 0) },
+    };
+  }, [boot]);
+
+  function TeamOfWeekCard({ tow, currentEvent }) {
+    if (!tow?.bestXI) return null;
+    const { bestXI, totals } = tow;
+
+    return (
+      <div className="mb-6 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold">
+            Team of the Week {currentEvent?.name ? `(${currentEvent.name})` : ""}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-700 dark:text-zinc-400">
+            <Badge tone="green">
+              XI {bestXI.points.toFixed(1)} pts
+            </Badge>
+            <Badge tone="indigo">
+              {bestXI.d}-{bestXI.m}-{bestXI.f}
+            </Badge>
+            <Badge tone="amber">£{totals.cost.toFixed(1)}</Badge>
+          </div>
+        </div>
+
+        {/* Uses your existing pitch rows renderer */}
+        <FormationRows bestXI={bestXI} />
+      </div>
+    );
+  }
 
   // === Optimizer ===
   function buildBestSquad({
@@ -625,6 +811,32 @@ export default function PredictionsPage({ apiBase = "/api", onOpenPlayer }) {
       .sort((a, b) => num(b.predicted_total_points) - num(a.predicted_total_points))
       .slice(0, Math.max(1, limit));
   }, [predRows, q, team, pos, limit]);
+
+  const summByModel = useMemo(() => {
+    const by = {};
+    for (const r of summRows) if (r?.model) by[r.model] = r;
+    return by;
+  }, [summRows]);
+
+  const bestByMAE = useMemo(() => {
+    if (!summRows.length) return null;
+    return [...summRows].sort((a, b) => a.mae - b.mae)[0];
+  }, [summRows]);
+
+  const maxMae = useMemo(() => Math.max(1, ...summRows.map((r) => Number(r.mae) || 0)), [summRows]);
+  const maxPosMae = useMemo(() => {
+    let m = 1;
+    for (const r of summRows) {
+      m = Math.max(
+        m,
+        Number(r.mae_pos_GK) || 0,
+        Number(r.mae_pos_DEF) || 0,
+        Number(r.mae_pos_MID) || 0,
+        Number(r.mae_pos_FWD) || 0
+      );
+    }
+    return m;
+  }, [summRows]);
 
   /* ============================== UI Bits ============================== */
 
@@ -970,6 +1182,8 @@ export default function PredictionsPage({ apiBase = "/api", onOpenPlayer }) {
         </div>
       </div>
 
+      <TeamOfWeekCard tow={teamOfWeek} currentEvent={currentEvent} />
+
       {/* Predicted points header */}
       <div className="mb-3">
         <h2 className="text-lg font-semibold tracking-tight">
@@ -1015,6 +1229,130 @@ export default function PredictionsPage({ apiBase = "/api", onOpenPlayer }) {
             )}
           </div>
         </div>
+      </div>
+
+      <div className="mb-5 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Accuracy vs Actuals <strong>{currentEvent?.name ? `(${currentEvent.name})` : ""}</strong></h3>
+              <p className="mt-1 max-w-3xl text-[13px] text-zinc-600 dark:text-zinc-300">
+                <strong>How close did each model get to real FPL points last GW?</strong>
+                <br />
+                <div className="mt-1 block">
+                  <div><strong>MAE/RMSE</strong> = average error and big-miss penalty (lower is better).</div>
+                  <div><strong>R² / Pearson r</strong> = how well predicted points scale with reality (good for captains/hauls).</div>
+                  <div><strong>Spearman ρ</strong> = ranking quality (useful for picking between similarly priced options).</div>
+                  <div><strong>Bias</strong> = systematic over/under—e.g., a negative bias suggests the model tends to underrate returns.</div>
+                  <div><strong>MAE by position</strong> shows whether the model reads defenders’ CS threat, midfield goal/assist upside, GK save/bonus, or forwards’ xG better/worse.</div>
+                </div>
+              </p>
+            </div>
+            {typeof evalGw === "number" && (
+              <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-200">
+                Compared to Actuals — GW {evalGw}
+              </span>
+            )}
+          </div>
+
+          {bestByMAE && (
+            <div className="text-sm">
+              <span className="mr-2">Best MAE:</span>
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                {MODEL_LABEL[bestByMAE.model] || bestByMAE.model} · {fmt.num(bestByMAE.mae, 3)}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {summLoading ? (
+          <div className="text-sm text-zinc-500">Loading evaluation…</div>
+        ) : summErr ? (
+          <div className="text-sm text-rose-600">Failed to load: {summErr}</div>
+        ) : !summRows.length ? (
+          <div className="text-sm text-zinc-500">No evaluation data.</div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {["lstm", "mlp", "lgb", "xgb"].map((m) => {
+              const s = summByModel[m];
+              if (!s) return null;
+              const isBest = bestByMAE && s.model === bestByMAE.model;
+              return (
+                <div
+                  key={m}
+                  className={`relative rounded-xl border p-3 shadow-sm dark:border-zinc-800 ${
+                    isBest ? "border-emerald-400/60 ring-1 ring-emerald-400/50" : "border-zinc-200"
+                  } dark:bg-zinc-950 bg-white`}
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="text-sm font-semibold">{MODEL_LABEL[m]}</div>
+                    <Badge tone={toneForModel(m)}>{m.toUpperCase()}</Badge>
+                  </div>
+
+                  {/* headline numbers */}
+                  <div className="mb-2 grid grid-cols-2 gap-2">
+                    <div className="rounded-lg bg-zinc-50 p-2 text-xs dark:bg-zinc-900/40">
+                      <div className="text-zinc-500">MAE</div>
+                      <div className="tabular-nums text-[15px] font-semibold">{fmt.num(s.mae, 3)}</div>
+                      <div className="mt-1">
+                        <Bar value={s.mae} max={maxMae} label="vs peers" />
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-zinc-50 p-2 text-xs dark:bg-zinc-900/40">
+                      <div className="text-zinc-500">RMSE</div>
+                      <div className="tabular-nums text-[15px] font-semibold">{fmt.num(s.rmse, 3)}</div>
+                      <div className="mt-1">
+                        <Bar value={s.rmse} max={maxMae * 1.4} label="scale" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* correlation block */}
+                  <div className="mb-2 grid grid-cols-3 gap-2 text-[11px]">
+                    <MiniStat label="R²" value={fmt.num(s.r2, 3)} tone="slate" />
+                    <MiniStat label="ρ (rank)" value={fmt.num(s.spearman_rho, 3)} tone="slate" />
+                    <MiniStat label="r (linear)" value={fmt.num(s.pearson_r, 3)} tone="slate" />
+                  </div>
+
+                  {/* football-facing quick take */}
+                  <div className="mb-2 rounded-lg bg-zinc-50 p-2 text-[11px] leading-snug text-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300">
+                    <strong>Scout note:</strong>{" "}
+                    {s.model === "lstm" &&
+                      "Seq model reads momentum: good at catching hot streaks and role changes; can under-call outlier hauls."}
+                    {s.model === "mlp" &&
+                      "Flexible learner: decent at mixed signals (ICT + fixtures), but can smooth extremes—haul detection is harder."}
+                    {s.model === "lgb" &&
+                      "Tree booster is sturdy on structured FPL stats; tends to favor consistent starters, less spicy on one-off explosions."}
+                    {s.model === "xgb" &&
+                      "Regularized booster keeps volatility down; great for safe picks, can be conservative on breakout punts."}
+                  </div>
+
+                  {/* per-position MAE */}
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-medium text-zinc-500">MAE by position</div>
+                    <Bar value={s.mae_pos_GK}  max={maxPosMae} label="GK"  good />
+                    <Bar value={s.mae_pos_DEF} max={maxPosMae} label="DEF" good />
+                    <Bar value={s.mae_pos_MID} max={maxPosMae} label="MID" good />
+                    <Bar value={s.mae_pos_FWD} max={maxPosMae} label="FWD" good />
+                  </div>
+
+                  {/* bias + hit rates */}
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                    <MiniStat label="Bias" value={fmt.num(s.bias, 3)} tone={s.bias < 0 ? "indigo" : "amber"} />
+                    <MiniStat label="Top 10" value={fmt.pct(s.top10_hitrate, 0)} tone="violet" />
+                    <MiniStat label="Top 20" value={fmt.pct(s.top20_hitrate, 0)} tone="violet" />
+                  </div>
+
+                  {isBest && (
+                    <span className="absolute -right-2 -top-2 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white shadow">
+                      Best MAE
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <BestSquadCard best={bestSquad} />
