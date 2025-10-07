@@ -1,0 +1,107 @@
+podTemplate(
+  namespace: 'epl-data',
+  nodeSelector: 'kubernetes.io/hostname=k8-node1',
+  podRetention: onFailure(),
+  containers: [
+    containerTemplate(
+      name: 'python',
+      image: 'python:3.12-slim',
+      command: 'sleep', args: 'infinity', ttyEnabled: true
+    ),
+    containerTemplate(
+      name: 'psql',
+      image: 'postgres:16',
+      command: 'sleep', args: 'infinity', ttyEnabled: true
+    ),
+    containerTemplate(
+      name: 'kubectl',
+      image: 'bitnami/kubectl:1.32',
+      command: 'sleep', args: 'infinity', ttyEnabled: true
+    ),
+  ],
+  volumes: [
+    persistentVolumeClaim(claimName: 'fpl', mountPath: '/ready', readOnly: false)
+  ],
+
+  yaml: """
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+    - name: python
+      env:
+        - name: PIP_NO_CACHE_DIR
+          value: "1"
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
+        - name: DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secrets
+              key: POSTGRES_PASSWORD
+        - name: API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: api-auth
+              key: API_TOKEN
+    - name: psql
+      env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secrets
+              key: POSTGRES_PASSWORD
+"""
+) {
+  node(POD_LABEL) {
+    def GIT_URL     = 'https://github.com/tamhid92/epl-data.git'
+    def GIT_BRANCH  = 'main'
+    def LOADER_PATH = 'fpl/upload_to_db.py'
+    def INPUT_DIR   = '/ready'
+    def DB_HOST     = 'postgres'
+    def DB_PORT     = 5432
+    def DB_NAME     = 'epl'
+    def DB_USER     = 'postgres'
+
+    stage('Checkout loader repo') {
+      git branch: GIT_BRANCH, url: GIT_URL
+    }
+    stage('Python venv & deps') {
+      container('python') {
+        sh """
+          set -euo pipefail
+          apt-get update -y && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+          python -m venv .venv
+          . .venv/bin/activate
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pandas sqlalchemy psycopg2-binary pyarrow requests
+          fi
+        """
+      }
+    }
+
+    stage('Load CSV -> Postgres') {
+      container('python') {
+        withEnv([
+          "INPUT_DIR=${INPUT_DIR}",
+          "DB_HOST=${DB_HOST}",
+          "DB_PORT=${DB_PORT}",
+          "DB_NAME=${DB_NAME}",
+          "DB_USER=${DB_USER}",
+        ]) {
+          sh """
+            set -euo pipefail
+            . .venv/bin/activate
+            python ${LOADER_PATH}
+          """
+        }
+      }
+    }
+  }
+}
