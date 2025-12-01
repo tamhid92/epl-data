@@ -1,6 +1,6 @@
-# =========================
+
 # API CONFIG (FQDN for DB host)
-# =========================
+
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -17,9 +17,9 @@ data:
   CORS_ORIGINS: ""
 
 ---
-# =========================
+
 # DEPLOYMENT
-# =========================
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,7 +49,6 @@ spec:
         seccompProfile:
           type: RuntimeDefault
 
-      # ---- Wait for Postgres to resolve and accept connections
       initContainers:
         - name: wait-for-postgres
           image: postgres:17-alpine
@@ -90,11 +89,9 @@ spec:
           ports:
             - { containerPort: 8000, name: http }
           env:
-            # DB name from your DB ConfigMap
             - name: DB_NAME
               valueFrom:
                 configMapKeyRef: { name: db-config, key: DB_NAME }
-            # App config
             - name: DB_HOST
               valueFrom:
                 configMapKeyRef: { name: epl-api-config, key: DB_HOST }
@@ -138,7 +135,6 @@ spec:
                 secretKeyRef: { name: postgres-secrets, key: POSTGRES_PASSWORD }
             - name: PROMETHEUS_MULTIPROC_DIR
               value: /prometheus_multiproc
-            # Logging
             - { name: LOG_LEVEL, value: "INFO" }
             - { name: LOG_JSON,  value: "true" }
 
@@ -179,9 +175,7 @@ spec:
           emptyDir: {}
 
 ---
-# =========================
 # SERVICE (ClusterIP)
-# =========================
 apiVersion: v1
 kind: Service
 metadata:
@@ -199,9 +193,7 @@ spec:
       targetPort: http
 
 ---
-# =========================
 # NETWORKING
-# =========================
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -246,36 +238,9 @@ spec:
               app: postgres
       ports:
         - { protocol: TCP, port: 5432 }
-
 ---
-# =========================
-# NETWORK POLICY (allow Prometheus to scrape)
-# =========================
-# apiVersion: networking.k8s.io/v1
-# kind: NetworkPolicy
-# metadata:
-#   name: epl-api-allow-prometheus
-#   namespace: epl-data
-# spec:
-#   podSelector:
-#     matchLabels:
-#       app: epl-api
-#   policyTypes: ["Ingress"]
-#   ingress:
-#     - from:
-#         - namespaceSelector:
-#             matchLabels:
-#               kubernetes.io/metadata.name: monitoring
-#           podSelector:
-#             matchLabels:
-#               app.kubernetes.io/name: prometheus
-#       ports:
-#         - { protocol: TCP, port: 8000 }
 
----
-# =========================
-# HPA (optional)
-# =========================
+# HPA
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -297,9 +262,7 @@ spec:
           averageUtilization: 70
 
 ---
-# =========================
 # PROMETHEUS OPERATOR INTEGRATION
-# =========================
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

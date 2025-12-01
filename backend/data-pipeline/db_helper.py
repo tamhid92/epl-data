@@ -1,4 +1,3 @@
-# postgres_helper.py
 from __future__ import annotations
 
 from io import StringIO
@@ -17,7 +16,6 @@ from sqlalchemy.types import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from typing import Any, Tuple
 
-# Optional: only needed for COPY path
 try:
     import psycopg2
 except Exception:
@@ -32,16 +30,16 @@ _SQL_TYPE_MAP = {
     "numeric": Numeric,
     "decimal": Numeric,
     "text": Text,
-    "string": String,        # alias
-    "varchar": String,       # supports varchar(255) syntax via parse
+    "string": String,       
+    "varchar": String,       
     "date": Date,
     "time": Time,
     "timestamp": DateTime,
-    "datetime": DateTime,    # alias
+    "datetime": DateTime,    
     "bool": Boolean,
     "boolean": Boolean,
     "json": JSON,
-    "jsonb": JSON,           # JSON maps to JSONB on PG
+    "jsonb": JSON,         
     "uuid": UUID,
 }
 
@@ -56,7 +54,6 @@ def _parse_type(type_str: str):
         return String(length=size)
     base = ts.split("(", 1)[0]
     if base in _SQL_TYPE_MAP:
-        # handle precision/scale for numeric(x,y)
         if base in ("numeric", "decimal") and "(" in ts and ts.endswith(")"):
             inside = ts[ts.find("(") + 1 : -1]
             parts = [p.strip() for p in inside.split(",")]
@@ -65,7 +62,6 @@ def _parse_type(type_str: str):
             elif len(parts) == 1:
                 return Numeric(precision=int(parts[0]))
         return _SQL_TYPE_MAP[base]()
-    # Unrecognized -> return raw type via text (usable in Column(type_=...))
     return text(type_str)
 
 
@@ -138,14 +134,9 @@ class Postgres:
         )
 
         if primary_key:
-            # If any PK column wasn’t marked as primary_key individually, set a composite PK:
-            # SQLAlchemy needs PrimaryKeyConstraint for composite PK; simplest is to emit raw SQL.
-            # To keep this simple and robust, we’ll add after create.
             pass
 
-        # Create (if not exists)
         with self.engine.begin() as conn:
-            # CREATE TABLE IF NOT EXISTS via SQL—works even for composite PK & unique constraints:
             cols_sql = []
             for col, tp in columns.items():
                 cols_sql.append(f'"{col}" {tp}')
@@ -169,7 +160,6 @@ class Postgres:
             create_sql = f'CREATE TABLE {ine}{fqtn} ({cols_clause});'
             conn.exec_driver_sql(create_sql)
 
-            # Indexes
             if indexes:
                 for ix_cols in indexes:
                     ix_name = f'ix_{table_name}_' + "_".join(ix_cols)
@@ -177,7 +167,6 @@ class Postgres:
                     create_idx = f'CREATE INDEX IF NOT EXISTS "{ix_name}" ON {fqtn} ({cols});'
                     conn.exec_driver_sql(create_idx)
 
-    # ---------- 2) INSERT DATAFRAME ----------
     def insert_dataframe(
         self,
         table_name: str,
@@ -218,7 +207,6 @@ class Postgres:
             finally:
                 raw.close()
         else:
-            # Fallback: pandas (uses SQLAlchemy executemany)
             df.to_sql(
                 name=table_name,
                 con=self.engine,
@@ -229,7 +217,6 @@ class Postgres:
                 method="multi",
             )
 
-    # ---------- 3) UPSERT DATAFRAME ----------
     def upsert_dataframe(
         self,
         table_name: str,
@@ -292,10 +279,10 @@ class Postgres:
             db.insert_dict("teams", [{"id": 2, "name": "Liverpool"}, {"id": 3, "name": "Chelsea"}])
         """
         if isinstance(data, dict):
-            data = [data]  # make it a list of one
+            data = [data]
 
         if not data:
-            return  # nothing to insert
+            return
 
         metadata = MetaData(schema=schema)
         table = Table(table_name, metadata, autoload_with=self.engine)
@@ -363,17 +350,13 @@ class Postgres:
         ine = "IF NOT EXISTS " if if_not_exists else ""
         create_sql = f"CREATE TABLE {ine}{fqtn} ({', '.join(cols_sql + constraints)});"
 
-        # index name sanitizer (identifiers only; columns remain quoted)
         def safe_ix_name(cols: list[str]) -> str:
             core = "_".join("".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in c) for c in cols)
             return (f"ix_{table_name}_{core}")[:63]
 
-        # --- Pure DBAPI path ---
-        conn = self.engine.raw_connection()   # bypass SA DDL/compiler layers
+        conn = self.engine.raw_connection()   
         try:
             with conn.cursor() as cur:
-                # helpful debug:
-                # print("DDL =>", create_sql)
                 cur.execute(create_sql)
                 if indexes:
                     for ix_cols in indexes:
@@ -385,7 +368,6 @@ class Postgres:
         finally:
             conn.close()
 
-        # ---------- 4) RUN ARBITRARY SQL QUERIES ----------
     def query_df(
         self,
         sql: str,
@@ -405,9 +387,7 @@ class Postgres:
         with self.engine.begin() as conn:
             cur = conn.exec_driver_sql(sql, params or {})
             if not cur.returns_rows:
-                # Non-SELECT; nothing to return as DataFrame
                 return pd.DataFrame()
-            # Use mappings() to get dict-like rows; this preserves column names cleanly
             rows = cur.mappings().all()
             return pd.DataFrame(rows)
 

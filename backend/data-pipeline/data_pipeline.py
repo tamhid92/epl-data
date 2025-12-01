@@ -22,7 +22,7 @@ import link_understat_fbref as fb_us_xref
 import install_sql_func as sql_func
 import json
 
-# ---------------------- Logging (stdout) ----------------------
+# ---------------------- Logging ----------------------
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -127,16 +127,13 @@ def replace_table_atomic(df: pd.DataFrame, name: str, bind: Engine | Connection,
     """
     staging = f"_{name}_staging"
 
-    # 1) Write staging with the same bind
     df.to_sql(staging, con=bind, if_exists='replace', index=False)
 
-    # 2) Single transaction to swap + 3) reapply PKs/indexes
     if isinstance(bind, Engine):
         with bind.connect() as conn:
             with conn.begin():
                 _swap_and_index(conn, staging, name, pk_cols, index_sql)
     elif isinstance(bind, Connection):
-        # Begin a txn on the existing connection; execute on the connection (not the transaction)
         with bind.begin():
             _swap_and_index(bind, staging, name, pk_cols, index_sql)
     else:
@@ -216,9 +213,6 @@ def dict_of_3tuple_dfs_to_json(
 
     return json.dumps(out, ensure_ascii=ensure_ascii, indent=indent)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Jobs (self-contained; no module-level state)
-# ───────────────────────────────────────────────────────────────────────────────
 @log_step
 def update_standings():
     engine = get_engine()
@@ -272,7 +266,6 @@ def build_teams_data(season_data):
     engine = get_engine()
     us = get_understat()
 
-# -------- Source pulls --------
     teams = []
     teams_data = season_data[1]
     all_teams_data = us.scrape_all_teams_data(SEASON_ID, COMP_ID)
@@ -284,7 +277,6 @@ def build_teams_data(season_data):
             "team_name": teams_data[key]['title']
         })
 
-    # -------- epl_teams (atomic replace + indexes) --------
     teams_df = pd.DataFrame(teams)
     logger.info("Teams DF shape: %s", _safe_shape(teams_df))
     replace_table_atomic(
@@ -296,7 +288,6 @@ def build_teams_data(season_data):
     )
     logger.info("epl_teams table replaced in DB.")
 
-    # -------- formations (created & conceded) --------
     formations_created, formations_conceded = [], []
     for key in all_teams_data.keys():
         team_name = _teamname_from_key(key)
@@ -338,7 +329,6 @@ def build_teams_data(season_data):
     )
     logger.info("formations_conceded table replaced in DB.")
 
-    # -------- situation (created & conceded) --------
     created, conceded = _emit_tables_for_category(all_teams_data, "situation", "situation")
     logger.info("team_chances_created DF shape: %s", _safe_shape(created))
     replace_table_atomic(
@@ -353,7 +343,6 @@ def build_teams_data(season_data):
         index_sql=['CREATE INDEX IF NOT EXISTS idx_tconc_team ON "team_chances_conceded" ("team_name")']
     )
 
-    # -------- gameState --------
     created, conceded = _emit_tables_for_category(all_teams_data, "gameState", "state")
     replace_table_atomic(
         created, "game_state", engine,
@@ -366,7 +355,6 @@ def build_teams_data(season_data):
         index_sql=['CREATE INDEX IF NOT EXISTS idx_gsc_team ON "game_state_conceded" ("team_name")']
     )
 
-    # -------- timing --------
     created, conceded = _emit_tables_for_category(all_teams_data, "timing", "period")
     replace_table_atomic(
         created, "timing", engine,
@@ -379,7 +367,6 @@ def build_teams_data(season_data):
         index_sql=['CREATE INDEX IF NOT EXISTS idx_timingc_team ON "timing_conceded" ("team_name")']
     )
 
-    # -------- shotZone --------
     created, conceded = _emit_tables_for_category(all_teams_data, "shotZone", "zone")
     replace_table_atomic(
         created, "shot_zone", engine,
@@ -392,7 +379,6 @@ def build_teams_data(season_data):
         index_sql=['CREATE INDEX IF NOT EXISTS idx_szc_team ON "shot_zone_conceded" ("team_name")']
     )
 
-    # -------- attackSpeed --------
     created, conceded = _emit_tables_for_category(all_teams_data, "attackSpeed", "speed")
     replace_table_atomic(
         created, "attack_speed", engine,
@@ -405,7 +391,6 @@ def build_teams_data(season_data):
         index_sql=['CREATE INDEX IF NOT EXISTS idx_asc_team ON "attack_speed_conceded" ("team_name")']
     )
 
-    # -------- result --------
     created, conceded = _emit_tables_for_category(all_teams_data, "result", "result_type")
     replace_table_atomic(
         created, "result", engine,
@@ -437,7 +422,6 @@ def init_match_data():
     init_matches_all(all_match_data)
     logger.info("Initial match data inserted/upserted.")
 
-# =============================== FBRef ====================================
 
 @log_step
 def fbref_data():
@@ -469,7 +453,6 @@ def fbref_ingest_from_bundle(all_fbref_stats: dict):
     
     fb_us_xref.build_xrefs(engine)
 
-# ==========================================================================
 @log_step
 def install_sql_functions():
     engine = get_engine()
@@ -572,6 +555,5 @@ def _main():
         dt = perf_counter() - t0
         logger.info("Pipeline complete in %.2fs", dt)
 
-# ---------------------- Entrypoint ----------------------
 if __name__ == "__main__":
     _main()

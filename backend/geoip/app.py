@@ -45,7 +45,6 @@ def lookup(ip: str):
     city = city_reader.get(ip) or {}
     asn  = asn_reader.get(ip)  if asn_reader else {}
 
-    # DB-IP uses MaxMind schema
     country      = (city.get("country") or {}).get("iso_code") or "UNKNOWN"
     country_name = (city.get("country") or {}).get("names", {}).get("en")
     region       = None

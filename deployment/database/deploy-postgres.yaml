@@ -85,7 +85,7 @@ spec:
       port: 5432
       targetPort: tcp-postgres
 
-# ---------- STATEFULSET (deploys the DB) ----------
+# ---------- STATEFULSET ----------
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -110,7 +110,6 @@ spec:
         seccompProfile:
           type: RuntimeDefault
         fsGroupChangePolicy: OnRootMismatch
-      # OPTIONAL: ensure hostPath perms (uncomment if you get permission errors)
       initContainers:
         - name: fix-perms
           image: busybox:1.36

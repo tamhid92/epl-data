@@ -6,7 +6,6 @@ from typing import Dict, Any, Iterable, Tuple
 import pandas as pd
 from sqlalchemy.engine import Engine
 
-# ------------------ key flattening helpers ------------------
 
 def _parse_key(k: str) -> Tuple[str, ...] | None:
     """Parse a string that looks like a tuple key: "('Foo','Bar')" -> ('Foo','Bar')."""
@@ -46,7 +45,6 @@ def _clean_key(k: str) -> str:
     else:
         name = str(k)
 
-    # sanitize, then LOWERCASE
     name = name.strip()
     name = name.replace("%", "pct").replace("+", "plus")
     name = re.sub(r"[^\w]+", "_", name)
@@ -65,7 +63,6 @@ def _flatten_many(rows: Iterable[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame([_flatten_one(r) for r in rows])
 
 
-# ------------------ team normalization ------------------
 
 _CANON_REPLACEMENTS = {
     " Utd": " United",
@@ -83,10 +80,9 @@ def _normalize_text_name(raw: str) -> str:
         return raw
     name = raw.strip()
     if name.lower().startswith("vs "):
-        name = name[3:]  # drop "vs "
+        name = name[3:]
     for a, b in _CANON_REPLACEMENTS.items():
         name = name.replace(a, b)
-    # collapse whitespace
     name = " ".join(name.split())
     return name
 
@@ -120,8 +116,6 @@ def _attach_team_id(df: pd.DataFrame, teams_df: pd.DataFrame, name_col: str = "S
     return df
 
 
-# ------------------ main ingest ------------------
-
 def ingest_fbref_bundle(
     engine: Engine,
     bundle: Dict[str, Any],
@@ -147,7 +141,6 @@ def ingest_fbref_bundle(
     block = bundle[category]
     teams_df, alias_map = _load_team_maps(engine)
 
-    # --- TEAM ---
     team_rows = block.get("team") or []
     team_df = _flatten_many(team_rows)
     if not team_df.empty:
@@ -169,7 +162,6 @@ def ingest_fbref_bundle(
         # team_df.drop(columns=["team_id"], inplace=True)
         team_df.to_sql(team_table, con=engine, if_exists=if_exists, index=False)
 
-    # --- VS TEAM ---
     vs_rows = block.get("vs_team") or []
     vs_df = _flatten_many(vs_rows)
     if not vs_df.empty:
@@ -186,7 +178,6 @@ def ingest_fbref_bundle(
         vs_table = f"vs_team_{category.replace(' ', '_')}"
         vs_df.to_sql(vs_table, con=engine, if_exists=if_exists, index=False)
 
-    # --- PLAYERS ---
     players_rows = block.get("players") or []
     players_df = _flatten_many(players_rows)
     if not players_df.empty:
@@ -205,8 +196,6 @@ def ingest_fbref_bundle(
         players_df.to_sql(player_table, con=engine, if_exists=if_exists, index=False)
 
 
-# ------------------ optional: bootstrap alias table ------------------
-
 DDL_TEAM_ALIAS = """
 CREATE TABLE IF NOT EXISTS team_alias (
   alias TEXT PRIMARY KEY,
@@ -214,7 +203,6 @@ CREATE TABLE IF NOT EXISTS team_alias (
 );
 """
 
-# Example seeds you can insert once to reduce mismatches:
 DEFAULT_ALIAS_SEEDS = {
     "Newcastle Utd": "Newcastle United",
     "Nott'ham Forest": "Nottingham Forest",

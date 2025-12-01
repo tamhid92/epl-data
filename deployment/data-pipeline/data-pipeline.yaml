@@ -1,4 +1,4 @@
-# -------------------- ONE-TIME INIT JOB --------------------
+
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -62,16 +62,14 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
             runAsNonRoot: true
-            runAsUser: 1200   # selenium image runs as seluser (UID 1200)
+            runAsUser: 1200 
           volumeMounts:
             - name: dshm
               mountPath: /dev/shm
 
-        # --- Your ETL container ---
         - name: etl
           image: ghcr.io/tamhid92/epl-etl:staging
           imagePullPolicy: Always
-          # Wait for Selenium, then run python with "init"
           command: ["/bin/sh","-lc"]
           args:
             - |
@@ -143,7 +141,7 @@ spec:
             - name: tmp
               mountPath: /tmp
 ---
-# -------------------- WEEKLY UPDATE CRONJOB --------------------
+
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -190,7 +188,6 @@ spec:
                   done
                   echo "Postgres is ready."
           containers:
-            # --- Selenium sidecar ---
             - name: selenium
               image: selenium/standalone-chromium:latest
               imagePullPolicy: IfNotPresent
@@ -218,11 +215,9 @@ spec:
                 - name: dshm
                   mountPath: /dev/shm
 
-            # --- Your ETL container ---
             - name: etl
               image: ghcr.io/tamhid92/epl-etl:staging
               imagePullPolicy: IfNotPresent
-              # Wait for Selenium, then run python with "update"
               command: ["/bin/sh","-lc"]
               args:
                 - |

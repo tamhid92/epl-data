@@ -207,15 +207,13 @@ LEFT JOIN p_poss  p_poss_row  ON p_poss_row."player_id"::text = x.fbref_player_i
 $$;
 """
 
-# ---------------------- SQL blocks (indexes) ----------------------
 
 INDEX_STATEMENTS = (
-    # Players / xref
+
     'CREATE INDEX IF NOT EXISTS idx_players_name_lower ON players (lower(player_name));',
     'CREATE INDEX IF NOT EXISTS idx_player_xref_understat ON player_xref(understat_player_id);',
     'CREATE INDEX IF NOT EXISTS idx_player_xref_fbref ON player_xref(fbref_player_id);',
 
-    # FBref player tables by "player_id"
     'CREATE INDEX IF NOT EXISTS idx_fbref_std_pid   ON player_standard (("player_id"));',
     'CREATE INDEX IF NOT EXISTS idx_fbref_gk_pid    ON player_goalkeeping (("player_id"));',
     'CREATE INDEX IF NOT EXISTS idx_fbref_shot_pid  ON player_shooting (("player_id"));',
@@ -229,8 +227,6 @@ INDEX_STATEMENTS_CONCURRENTLY = tuple(
     s.replace("CREATE INDEX IF NOT EXISTS", "CREATE INDEX CONCURRENTLY IF NOT EXISTS")
     for s in INDEX_STATEMENTS
 )
-
-# ---------------------- Installers ----------------------
 
 def install_fbref_sql(engine: Engine, schema: str = "public") -> None:
 
@@ -280,8 +276,6 @@ def create_indexes(engine: Engine, concurrently: bool = False, schema: str = "pu
             conn.exec_driver_sql(f"SET search_path TO {schema};")
             for sql in stmts:
                 conn.exec_driver_sql(sql)
-
-# ---------------------- Validators ----------------------
 
 def validate_functions(engine: Engine) -> bool:
 

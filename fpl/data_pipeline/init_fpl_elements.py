@@ -1,7 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-#Import FPL Bootstrap FPL data to Postgres
 
 from __future__ import annotations
 import argparse
@@ -30,7 +26,6 @@ HEADERS =  {
 
 TABLE_NAME = "fpl_elements_enriched"
 
-# ---------- Optional libs ----------
 try:
     from rapidfuzz import fuzz
 except Exception:
@@ -48,7 +43,7 @@ except Exception:
 
 # ---------- Normalization helpers ----------
 _WS_RE = re.compile(r"\s+")
-_PUNCT_RE = re.compile(r"[^\w\s-]")  # keep hyphens
+_PUNCT_RE = re.compile(r"[^\w\s-]")
 
 def _strip_accents(s: str) -> str:
     if not isinstance(s, str):
@@ -152,7 +147,6 @@ def jaro_winkler(a: str, b: str) -> float:
             pass
     return float(SequenceMatcher(None, a, b).ratio())
 
-# ---------- Team canonicalization ----------
 SHORT_TO_NAME = {
     "ARS": "Arsenal", "AVL": "Aston Villa", "BOU": "Bournemouth", "BRE": "Brentford",
     "BHA": "Brighton", "BUR": "Burnley", "CHE": "Chelsea", "CRY": "Crystal Palace",
@@ -189,7 +183,6 @@ def normalize_team(raw: str, team_normset: set[str]) -> str:
         return s
     return s
 
-# ---------- Catalog fetch/flatten ----------
 def fetch_teams(teams_url: str) -> pd.DataFrame:
     try:
         data = requests.get(teams_url, headers=HEADERS, timeout=30).json()
@@ -260,7 +253,6 @@ def flatten_players(players: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(rows).drop_duplicates(subset=["player_name","fbref_id","understat_id"], keep="first")
     return df
 
-# ---------- Similarity scoring ----------
 def score_pair(a: str, b: str) -> float:
     a_n = norm(a); b_n = norm(b)
     if not a_n or not b_n:
@@ -358,14 +350,12 @@ def main(conn):
     ap.add_argument("--global-threshold", type=float, default=0.88)
     args = ap.parse_args()
 
-    # 1) Fetch canonical teams & build norm set + id map
     teams_df = fetch_teams(args.teams_url)
     if teams_df.empty:
         raise RuntimeError("No teams returned from teams endpoint.")
     team_normset = set(teams_df["norm_team"].tolist())
     tmap_norm_to_id = {r["norm_team"]: r["team_id"] for _, r in teams_df.iterrows()}
 
-    # 2) Fetch FPL bootstrap-static (players + teams)
     bs = requests.get(args.fpl_url, timeout=60).json()
     fpl_elements = bs.get("elements", [])
     fpl_teams = bs.get("teams", [])  # id, name, short_name, code, etc.
@@ -381,7 +371,6 @@ def main(conn):
             gameweek = i['id']
             break
 
-    # 3) Build a DataFrame from elements
     def full_name(el: dict) -> str:
         # Prefer first + second; fallback to web_name
         fn = (el.get("first_name") or "").strip()
@@ -465,7 +454,6 @@ def main(conn):
         tmp_table = f"{args.table}_tmp"
         df.to_sql(tmp_table, con=conn, if_exists="replace", index=False)
 
-        # Optional helpful indexes
         for stmt in [
             f'CREATE INDEX IF NOT EXISTS idx_{tmp_table}_team ON "{tmp_table}" (team);',
             f'CREATE INDEX IF NOT EXISTS idx_{tmp_table}_playername ON "{tmp_table}" (player_name_normalized);',

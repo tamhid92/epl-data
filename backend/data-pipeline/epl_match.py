@@ -23,9 +23,6 @@ def get_engine() -> Engine:
     url = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     return create_engine(url, pool_pre_ping=True, future=True)
 
-# -------------------------------------------------------------------
-# Schema
-# -------------------------------------------------------------------
 metadata = MetaData()
 
 match_info = Table(
@@ -110,9 +107,6 @@ match_rosters_data = Table(
 def create_tables(engine: Engine) -> None:
     metadata.create_all(engine)
 
-# -------------------------------------------------------------------
-# Helpers: coercion
-# -------------------------------------------------------------------
 def _to_int(v) -> int | None:
     try:
         if v is None or v == "" or str(v).lower() == "none":
@@ -138,9 +132,6 @@ def _to_dt(v) -> datetime | None:
     except Exception:
         return None
 
-# -------------------------------------------------------------------
-# Flatteners: transform one API match blob -> rows for each table
-# -------------------------------------------------------------------
 def _flatten_match_info(mi: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "match_id": _to_int(mi.get("id")),
@@ -228,9 +219,6 @@ def _flatten_rosters(rd: Dict[str, Any], match_id: int) -> List[Dict[str, Any]]:
             })
     return rows
 
-# -------------------------------------------------------------------
-# Upsert helpers
-# -------------------------------------------------------------------
 def _upsert_rows(engine: Engine, table: Table, rows: List[Dict[str, Any]], pk_cols: Tuple[str, ...]) -> int:
     if not rows:
         return 0
@@ -245,9 +233,6 @@ def _upsert_rows(engine: Engine, table: Table, rows: List[Dict[str, Any]], pk_co
         result = conn.execute(do_update)
         return result.rowcount or 0
 
-# -------------------------------------------------------------------
-# Public API
-# -------------------------------------------------------------------
 def init_matches_all(api_payload: Dict[str, Any]) -> None:
     """
     Bulk-initialize all matches currently present in the API payload (idempotent).
@@ -281,7 +266,6 @@ def upsert_match(api_match_blob: Tuple[Dict[str, Any], Dict[str, Any], Dict[str,
     engine = get_engine()
     create_tables(engine)
 
-    # Unpack payload (tuple preferred; dict supported for compatibility)
     if isinstance(api_match_blob, (tuple, list)):
         if len(api_match_blob) != 3:
             raise ValueError("Expected a 3-tuple: (shots_data, match_info, rosters_data)")
@@ -293,12 +277,10 @@ def upsert_match(api_match_blob: Tuple[Dict[str, Any], Dict[str, Any], Dict[str,
     else:
         raise TypeError("api_match_blob must be a (shots_data, match_info, rosters_data) tuple or a dict with those keys.")
 
-    # Flatten → rows
     mi = _flatten_match_info(match_i)
     shots = _flatten_shots(shots_d)
     rosters = _flatten_rosters(rosters_d, mi["match_id"])
 
-    # Upsert
     _upsert_rows(engine, match_info, [mi], ("match_id",))
     _upsert_rows(engine, shots_data, shots, ("shot_id",))
     _upsert_rows(engine, match_rosters_data, rosters, ("appearance_id",))

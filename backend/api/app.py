@@ -37,8 +37,8 @@ DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS", "")
 
 GEO_URL = os.getenv("GEO_URL", "http://ipgeo.epl-data.svc.cluster.local:8080")
-GEO_TIMEOUT = float(os.getenv("GEO_TIMEOUT", "0.35"))     # seconds
-GEO_CACHE_TTL = int(os.getenv("GEO_CACHE_TTL", "1800"))   # seconds (30m)
+GEO_TIMEOUT = float(os.getenv("GEO_TIMEOUT", "0.35"))
+GEO_CACHE_TTL = int(os.getenv("GEO_CACHE_TTL", "1800")) 
 
 POOL: Optional[SimpleConnectionPool] = None
 POOL_LOCK = threading.Lock()
@@ -90,7 +90,6 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
-        # Attach request context if present
         rid = getattr(g, "request_id", None)
         if rid:
             payload["request_id"] = rid
@@ -168,12 +167,7 @@ def _is_public_ip(ip: str) -> bool:
         return False
 
 def _geo_lookup(ip: str) -> Dict[str, Any]:
-    """
-    Returns a dict with keys:
-    country_iso2, country_name, region, city, latitude, longitude, asn, isp
-    Falls back to empty/unknown fields on error. Never raises.
-    """
-    # Cache first
+
     if not ip or not _is_public_ip(ip):
         return {}
     hit = _geo_cache_get(ip)
@@ -184,7 +178,6 @@ def _geo_lookup(ip: str) -> Dict[str, Any]:
         r = requests.get(f"{GEO_URL}/lookup", params={"ip": ip}, timeout=GEO_TIMEOUT)
         if r.ok:
             data = r.json() or {}
-            # normalize fields
             out = {
                 "country_iso2": (data.get("country_iso2") or data.get("country_code") or "").upper(),
                 "country_name": data.get("country_name") or "",
@@ -283,11 +276,9 @@ def _endpoint_label():
 
 @app.before_request
 def _api_token_gate():
-    # Let probes/metrics through, and keep OPTIONS preflights harmless.
     if request.method == "OPTIONS" or _is_public(request.path):
         return
 
-    # Expect token in header (preferred). Optional: allow ?api_token=... for quick tests.
     token = request.headers.get("X-API-Token") or request.args.get("api_token")
     if not API_TOKEN or token != API_TOKEN:
         abort(401, description="Missing or Invalid API token")
@@ -303,24 +294,19 @@ def _start_timer_and_request_id():
 
 @app.before_request
 def _visit_enrich_and_count():
-    # Only if request made it past the token gate (public paths are fine too)
     try:
-        # Real client IP & country via Cloudflare; safe fallbacks otherwise
         client_ip = request.headers.get("CF-Connecting-IP") \
                     or request.headers.get("X-Forwarded-For","").split(",")[0].strip() \
                     or request.remote_addr
 
-        # Prefer Cloudflare’s country for speed; we’ll still enrich from local geo for city/ASN/etc
         cf_country = (request.headers.get("CF-IPCountry") or "").strip().upper()
         geo = _geo_lookup(client_ip) if _is_public_ip(client_ip) else {}
 
-        # Choose ISO2 country code: geo > CF > UNKNOWN
         country = (geo.get("country_iso2") or cf_country or "UNKNOWN").upper()
 
         ua_str = request.headers.get("User-Agent","")
         dev, os_fam, os_major, browser, browser_major = _parse_ua(ua_str)
 
-        # stash for logging after response
         g._visit = {
             "ts": int(time.time()),
             "path": request.path,
@@ -338,7 +324,6 @@ def _visit_enrich_and_count():
             "browser": f"{browser} {browser_major}",
         }
 
-        # Prometheus counters (NO IPs in labels!)
         VISITS_TOTAL.inc()
         if country != "UNKNOWN":
             VISITS_BY_COUNTRY.labels(country=country).inc()
@@ -348,7 +333,6 @@ def _visit_enrich_and_count():
         ).inc()
 
     except Exception:
-        # never block requests due to telemetry
         pass
 
 
@@ -360,20 +344,17 @@ def _record_metrics_and_log(resp):
         REQ_LATENCY.labels(request.method, endpoint).observe(duration)
         REQUESTS.labels(request.method, endpoint, str(resp.status_code)).inc()
         g.response_status = resp.status_code
-        # basic access log
         logger.info(f"{request.method} {request.path} -> {resp.status_code} in {duration:.4f}s")
     finally:
         INFLIGHT.dec()
-    # propagate request id
     resp.headers["X-Request-ID"] = g.request_id
     try:
         v = getattr(g, "_visit", None)
         if v:
-            v = dict(v)  # copy
+            v = dict(v) 
             v["status"] = resp.status_code
             v["event"] = "visit"
-            # Emit a clean JSON line alongside your structured logs.
-            # (We keep IP only in logs; never in Prometheus labels.)
+
             print(json.dumps(v, ensure_ascii=False), flush=True)
     except Exception:
         pass
@@ -381,12 +362,10 @@ def _record_metrics_and_log(resp):
 
 @app.route("/metrics")
 def metrics():
-    # for multiprocess, must use the configured registry
     return Response(generate_latest(registry), mimetype=CONTENT_TYPE_LATEST)
 
-# -------------------- DB Pool --------------------
 def _export_pool_metrics():
-    # not exact, but good visibility
+
     try:
         DB_POOL_AVAILABLE.set(POOL._pool.qsize())
         if POOL is None:
@@ -394,7 +373,6 @@ def _export_pool_metrics():
             DB_POOL_INUSE.set(0)
             return
         DB_POOL_AVAILABLE.set(POOL._pool.qsize())
-        # in-use = maxconn - available (approx; psycopg2 SimpleConnectionPool has _pool and _used)
         inuse = len(getattr(POOL, "_used", {}))
         DB_POOL_INUSE.set(inuse)
     except Exception:
@@ -408,7 +386,7 @@ def _ensure_pool():
     with POOL_LOCK:
         if POOL is not None:
             return
-        for attempt in range(1, 31):  # ~60s total
+        for attempt in range(1, 31):
             try:
                 p = SimpleConnectionPool(
                     POOL_MIN,
@@ -421,7 +399,6 @@ def _ensure_pool():
                     connect_timeout=5,
                     application_name="epl_api",
                 )
-                # quick sanity check
                 with p.getconn() as c:
                     with c.cursor() as cur:
                         cur.execute("SELECT 1;")
@@ -438,7 +415,6 @@ class ConnCtx:
     def __enter__(self):
         _ensure_pool()
         if POOL is None:
-            # readiness will fail with 503; liveness (/health) stays OK
             raise RuntimeError("DB unavailable")
         self.conn = POOL.getconn()
         _export_pool_metrics()
@@ -487,7 +463,6 @@ def _check_team_table(name: str) -> str:
         abort(404, description=f"Unknown table '{name}'")
     return name
 
-# -------------------- Weekly Table (single league/season) --------------------
 WEEKLY_TABLE: Dict[str, Any] = {}
 WEEKLY_TABLE_LAST_BUILT: Optional[datetime] = None
 WEEKLY_TABLE_LOCK = threading.Lock()
@@ -757,7 +732,6 @@ def shot_data(match_id):
 
 @app.route("/shots/<string:team>", methods=["GET"])
 def shot_data_team(team):
-    # ⚠️ safer than the previous f-string
     with ConnCtx() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute('''
             SELECT * FROM shots_data
@@ -958,7 +932,7 @@ def debug_geo():
 
 # -------------------- Startup --------------------
 try:
-    rebuild_weekly_table()  # warm cache at startup
+    rebuild_weekly_table()
 except Exception:
     logger.exception("Initial weekly table build failed")
 
@@ -970,5 +944,4 @@ except Exception:
 
 # -------------------- Entrypoint --------------------
 if __name__ == "__main__":
-    # For local dev only; in prod use gunicorn with PROMETHEUS_MULTIPROC_DIR set
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")), debug=False)

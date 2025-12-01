@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 from __future__ import annotations
 import json
 from typing import Any, Dict, Iterable
@@ -97,7 +94,6 @@ def to_python_scalar(x: Any) -> Any:
     if isinstance(x, (np.integer,)):
         return int(x)
     if isinstance(x, (np.floating,)):
-        # convert nan to None handled by is_missing earlier; here just cast
         return float(x)
     if isinstance(x, (np.bool_,)):
         return bool(x)
@@ -119,13 +115,11 @@ def is_missing(x: Any) -> bool:
     if not is_scalar(x):
         return False
     try:
-        # pd.isna on scalars returns a single boolean
         return bool(pd.isna(x))
     except Exception:
         return False
 
 def deep_clean_json(obj: Any) -> Any:
-    # arrays first: convert to list and recurse
     if isinstance(obj, np.ndarray):
         return [deep_clean_json(v) for v in obj.tolist()]
 
@@ -141,7 +135,6 @@ def deep_clean_json(obj: Any) -> Any:
     if isinstance(obj, (list, tuple, set)):
         return [deep_clean_json(v) for v in obj]
 
-    # fallback
     return obj
 
 def coerce_json_cols(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
@@ -152,19 +145,15 @@ def coerce_json_cols(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
     def _fix(v):
         if v is None:
             return None
-        # ndarray -> list early
         if isinstance(v, np.ndarray):
             v = v.tolist()
-        # already a container: clean recursively
         if isinstance(v, (dict, list, tuple, set)):
             return deep_clean_json(v)
-        # JSON string?
         if isinstance(v, str) and v.strip().startswith(("{", "[")):
             try:
                 return deep_clean_json(json.loads(v))
             except Exception:
                 return None
-        # scalar: treat NaN/NaT as None; otherwise convert to python scalar
         return None if is_missing(v) else to_python_scalar(v)
 
     for c in cols:
@@ -217,7 +206,6 @@ def normalize_elements(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-# ---------------------- Replace-all writer ----------------------
 def drop_tables(engine: Engine) -> None:
     tables = [
         "fpl_element_types",

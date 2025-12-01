@@ -52,7 +52,6 @@ def _existing_tables(engine):
 
 def _pick_fbref_player_table(engine) -> str:
     tables = _existing_tables(engine)
-    # prefer player_standard; else first available category
     prefs = ["player_standard"] + [f"player_{c.replace(' ','_')}" for c in FBREF_CATEGORIES]
     for t in prefs:
         if t in tables:
@@ -64,7 +63,6 @@ def _columns(engine, table):
     q = """select column_name from information_schema.columns
            where table_schema='public' and table_name=%s"""
     cols = pd.read_sql(q, engine, params=(table,))['column_name'].tolist()
-    # map lower->actual for resilient lookup
     return {c.lower(): c for c in cols}
 
 def _get_col(cols, *candidates):
@@ -77,7 +75,6 @@ def build_team_xref(engine):
     teams = pd.read_sql('select team_id, team_name from epl_teams', engine)
     teams['norm_name'] = teams['team_name'].map(_norm_team)
 
-    # use team_standard if present; else derive from any team_* table
     table = "team_standard" if "team_standard" in _existing_tables(engine) else None
     if table is None:
         candidates = [f"team_{c.replace(' ','_')}" for c in FBREF_CATEGORIES]
@@ -92,7 +89,6 @@ def build_team_xref(engine):
     fb['norm_name'] = fb['fbref_name'].map(_norm_team)
 
     merged = fb.merge(teams, left_on='norm_name', right_on='norm_name', how='left')
-    # fuzzy map any leftovers
     missing = merged[merged['team_id'].isna()]
     if not missing.empty:
         cand = list(teams['norm_name'].unique())
@@ -128,7 +124,7 @@ def _load_fbref_players(engine, table) -> pd.DataFrame:
     pid = _get_col(cols, 'player id', 'player_id', )
     pname = _get_col(cols, 'player', 'player_name', 'name')
     squad = _get_col(cols, 'squad', 'team_name', 'team_title')
-    pos = cols.get('pos') or cols.get('position')  # optional
+    pos = cols.get('pos') or cols.get('position')
 
     sel = f'SELECT DISTINCT "{pid}"::text AS fbref_player_id, "{pname}" AS fbref_name, "{squad}" AS fbref_team'
     if pos: sel += f', "{pos}" AS fbref_pos'
@@ -139,11 +135,9 @@ def _load_fbref_players(engine, table) -> pd.DataFrame:
     return df
 
 def build_player_xref(engine, strict=97, fuzzy=90):
-    # team map
     tx = pd.read_sql('select team_id, team_name, fbref_team_id, fbref_name from team_xref', engine)
     tx['norm_team'] = tx['team_name'].map(_norm_team)
 
-    # understat players
     up = pd.read_sql("""
         select id::text as understat_player_id,
                player_name, team_title, coalesce(position,'') as position
@@ -155,7 +149,6 @@ def build_player_xref(engine, strict=97, fuzzy=90):
                   on='norm_team', how='left')
     up = up.rename(columns={'team_id': 'understat_team_id'})
 
-    # fbref players (from chosen table) + attach canonical team_id
     fb_table = _pick_fbref_player_table(engine)
     fp = _load_fbref_players(engine, fb_table)
     fp['norm_name'] = fp['fbref_name'].map(_norm)
@@ -194,7 +187,6 @@ def build_player_xref(engine, strict=97, fuzzy=90):
             })
             continue
         elif len(exact) > 1:
-            # tie-break on first letter of position if we have it
             pos = (r.get('position') or "").lower()[:1]
             ex2 = exact.copy()
             if pos:
@@ -214,7 +206,6 @@ def build_player_xref(engine, strict=97, fuzzy=90):
             })
             continue
 
-        # fuzzy within team
         cand = cands.copy()
         cand['score'] = cand['norm_name'].map(lambda n: _sim(u_name, n))
         cand = cand.sort_values('score', ascending=False)
